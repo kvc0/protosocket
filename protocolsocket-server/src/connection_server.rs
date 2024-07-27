@@ -15,24 +15,34 @@ use crate::Error;
 use crate::Result;
 
 #[derive(Debug)]
-pub struct Connection {
+pub(crate) struct NewConnection {
     stream: mio::net::TcpStream,
     address: std::net::SocketAddr,
 }
 
-pub trait ConnectionLifecycle {
-    type Deserializer;
-    type Serializer;
+#[derive(Debug)]
+pub(crate) struct Connection<Lifecycle: ConnectionLifecycle> {
+    stream: mio::net::TcpStream,
+    address: std::net::SocketAddr,
+    lifecycle: Lifecycle,
+}
 
-    
+pub trait ConnectionLifecycle: Unpin {
+    type Deserializer: Unpin;
+    type Serializer: Unpin;
+    type ServerState: Unpin;
+
+    /// A new connection lifecycle starts here. If you have a state machine, initialize it here. This is your constructor.
+    fn on_connect(server_state: &Self::ServerState) -> Self;
 }
 
 /// Once you've configured your connection server the way you want it, execute it on your asynchronous runtime.
-pub struct ConnectionServer {
-    new_streams: mpsc::UnboundedReceiver<Connection>,
+pub struct ConnectionServer<Lifecycle: ConnectionLifecycle> {
+    new_streams: mpsc::UnboundedReceiver<NewConnection>,
     connection_token_count: usize,
-    connections: HashMap<Token, Connection>,
+    connections: HashMap<Token, Connection<Lifecycle>>,
     mio_io: Option<Mio>,
+    server_state: Lifecycle::ServerState,
 }
 
 struct Mio {
@@ -40,8 +50,8 @@ struct Mio {
     events: mio::Events,
 }
 
-impl ConnectionServer {
-    pub(crate) fn new(listener: TcpListener) -> (ConnectionAcceptor, Self) {
+impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
+    pub(crate) fn new(server_state: Lifecycle::ServerState, listener: TcpListener) -> (ConnectionAcceptor, Self) {
         let (inbound_streams, new_streams) = mpsc::unbounded();
 
         (
@@ -57,6 +67,7 @@ impl ConnectionServer {
                     poll: mio::Poll::new().expect("must be able to create a poll"),
                     events: mio::Events::with_capacity(1024),
                 }.into(),
+                server_state,
             },
         )
     }
@@ -72,7 +83,8 @@ impl ConnectionServer {
                         log::error!("failed to register stream: {e:?}");
                         std::task::Poll::Ready(())
                     } else {
-                        self.connections.insert(token, connection);
+                        let lifecycle = Lifecycle::on_connect(&self.server_state);
+                        self.connections.insert(token, Connection { stream: connection.stream, address: connection.address, lifecycle });
                         continue
                     }
                 }
@@ -122,7 +134,7 @@ impl ConnectionServer {
     }
 }
 
-impl std::future::Future for ConnectionServer {
+impl<Lifecycle: ConnectionLifecycle> std::future::Future for ConnectionServer<Lifecycle> {
     type Output = ();
 
     fn poll(mut self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
@@ -142,7 +154,7 @@ impl std::future::Future for ConnectionServer {
 
 fn handle_connection_event(
     registry: &mio::Registry,
-    connection: &mut Connection,
+    connection: &mut Connection<impl ConnectionLifecycle>,
     event: &mio::event::Event,
 ) -> std::io::Result<bool> {
     if event.is_writable() {
@@ -218,14 +230,14 @@ fn handle_connection_event(
 
 pub(crate) struct ConnectionAcceptor {
     listener: TcpListener,
-    inbound_streams: mpsc::UnboundedSender<Connection>,
+    inbound_streams: mpsc::UnboundedSender<NewConnection>,
 }
 
 impl ConnectionAcceptor {
     pub fn accept(&self) -> Result<()> {
         let connection = match self.listener.accept() {
             Ok((stream, address)) => {
-                Connection { stream, address }
+                NewConnection { stream, address }
             }
             Err(e) if would_block(&e) => {
                 // I guess there isn't anything to accept after all

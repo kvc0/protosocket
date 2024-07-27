@@ -1,15 +1,17 @@
 [workspace]
 resolver = "2"
 
-members = [ "example",
+members = [
+    "example",
     "protocolsocket-prost",
     "protocolsocket-server",
 ]
 
 [workspace.dependencies]
-protocolsocket-server                  = { path = "protocolsocket-server" }
+protocolsocket-server   = { path = "protocolsocket-server" }
 
 bytes                   = { version = "1.6" }
+env_logger              = { version = "0.11" }
 futures                 = { version = "0.3" }
 log                     = { version = "0.4" }
 mio                     = { version = "1.0" }

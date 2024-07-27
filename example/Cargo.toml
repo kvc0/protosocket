@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+env_logger              = { workspace = true }
+log                     = { workspace = true }
 protocolsocket-server   = { workspace = true }
 tokio                   = { workspace = true, features = ["full"] }

@@ -23,7 +23,7 @@ impl Server {
     }
 
     /// address like "127.0.0.1:9000"
-    pub fn register_service_listener(&mut self, address: impl Into<String>) -> Result<ConnectionServer> {
+    pub fn register_service_listener<Lifecycle: crate::ConnectionLifecycle>(&mut self, address: impl Into<String>, server_state: Lifecycle::ServerState) -> Result<ConnectionServer<Lifecycle>> {
         let addr = address.into().parse()?;
         let mut listener = TcpListener::bind(addr)?;
 
@@ -31,7 +31,7 @@ impl Server {
 
         self.poll.registry()
             .register(&mut listener, token, Interest::READABLE)?;
-        let (acceptor, server) = ConnectionServer::new(listener);
+        let (acceptor, server) = ConnectionServer::new(server_state, listener);
 
         self.services.push(acceptor);
 
