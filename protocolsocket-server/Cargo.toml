@@ -1,0 +1,11 @@
+[package]
+name = "protocolsocket-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes                   = { workspace = true }
+futures                 = { workspace = true }
+log                     = { workspace = true }
+mio                     = { workspace = true, features = ["net", "os-poll"] }
+thiserror               = { workspace = true }

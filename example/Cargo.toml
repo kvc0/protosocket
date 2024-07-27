@@ -1,0 +1,8 @@
+[package]
+name = "example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+protocolsocket-server   = { workspace = true }
+tokio                   = { workspace = true, features = ["full"] }

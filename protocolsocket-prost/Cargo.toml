@@ -1,0 +1,9 @@
+[package]
+name = "protocolsocket-prost"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+protocolsocket-server   = { workspace = true }
+
+prost                   = { workspace = true }

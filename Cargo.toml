@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+
+members = [ "example",
+    "protocolsocket-prost",
+    "protocolsocket-server",
+]
+
+[workspace.dependencies]
+protocolsocket-server                  = { path = "protocolsocket-server" }
+
+bytes                   = { version = "1.6" }
+futures                 = { version = "0.3" }
+log                     = { version = "0.4" }
+mio                     = { version = "1.0" }
+prost                   = { version = "0.13" }
+thiserror               = { version = "1.0" }
+tokio                   = { version = "1.39" }
