@@ -1,6 +1,6 @@
 use std::{future::Future, marker::PhantomData};
 
-use protosocket_server::{ConnectionLifecycle, Deserializer};
+use protosocket_connection::{ConnectionLifecycle, Deserializer};
 
 use crate::{prost_serializer::ProstSerializer, MessageExecutor};
 

@@ -1,18 +1,12 @@
-pub(crate) mod connection;
 pub(crate) mod connection_acceptor;
 pub(crate) mod connection_server;
 pub(crate) mod error;
 pub(crate) mod listener_server;
-pub(crate) mod types;
 
 pub use connection_server::ConnectionServer;
 pub use error::Error;
 pub use error::Result;
 pub use listener_server::Server;
-pub use types::ConnectionLifecycle;
-pub use types::DeserializeError;
-pub use types::Deserializer;
-pub use types::Serializer;
 
 pub(crate) fn interrupted(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::Interrupted

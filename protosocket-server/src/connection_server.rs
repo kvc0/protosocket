@@ -9,11 +9,11 @@ use futures::Stream;
 use mio::net::TcpListener;
 use mio::Interest;
 use mio::Token;
+use protosocket_connection::Connection;
+use protosocket_connection::ConnectionLifecycle;
 
-use crate::connection::Connection;
 use crate::connection_acceptor::ConnectionAcceptor;
 use crate::connection_acceptor::NewConnection;
-use crate::types::ConnectionLifecycle;
 
 /// Once you've configured your connection server the way you want it, execute it on your asynchronous runtime.
 pub struct ConnectionServer<Lifecycle: ConnectionLifecycle> {
@@ -112,7 +112,7 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
                             Lifecycle::on_connect(&self.server_state);
                         self.connections.insert(
                             token,
-                            Connection::new(connection, lifecycle, deserializer, serializer),
+                            Connection::new(connection.stream, connection.address, lifecycle, deserializer, serializer),
                         );
                         continue;
                     }

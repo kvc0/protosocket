@@ -169,6 +169,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
+ "protosocket-connection",
  "protosocket-server",
  "tokio",
 ]
@@ -436,13 +437,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "protosocket-connection"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "log",
+ "mio",
+ "thiserror",
+]
+
+[[package]]
 name = "protosocket-prost"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "log",
  "prost",
- "protosocket-server",
+ "protosocket-connection",
 ]
 
 [[package]]
@@ -453,6 +465,7 @@ dependencies = [
  "futures",
  "log",
  "mio",
+ "protosocket-connection",
  "thiserror",
 ]
 

@@ -1,4 +1,5 @@
 use mio::{net::TcpListener, Events, Interest, Poll, Token};
+use protosocket_connection::ConnectionLifecycle;
 
 use crate::{
     connection_acceptor::ConnectionAcceptor, connection_server::ConnectionServer, interrupted,
@@ -25,7 +26,7 @@ impl Server {
     }
 
     /// address like "127.0.0.1:9000"
-    pub fn register_service_listener<Lifecycle: crate::ConnectionLifecycle>(
+    pub fn register_service_listener<Lifecycle: ConnectionLifecycle>(
         &mut self,
         address: impl Into<String>,
         server_state: Lifecycle::ServerState,

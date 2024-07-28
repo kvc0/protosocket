@@ -5,7 +5,8 @@ use std::{
 };
 
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
-use protosocket_server::{ConnectionLifecycle, DeserializeError, Deserializer, Serializer, Server};
+use protosocket_connection::{ConnectionLifecycle, DeserializeError, Deserializer, Serializer};
+use protosocket_server::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,23 +1,18 @@
 use std::{
-    cmp::min,
-    collections::VecDeque,
-    io::{IoSlice, Read, Write},
-    pin::pin,
-    task::Context,
+    cmp::min, collections::VecDeque, io::{IoSlice, Read, Write}, net::SocketAddr, pin::pin, task::Context
 };
 
 use futures::Stream;
-use mio::Registry;
+use mio::{net::TcpStream, Registry};
 
 use crate::{
-    connection_acceptor::NewConnection,
     interrupted,
     types::{ConnectionLifecycle, DeserializeError},
     would_block, Deserializer, Serializer,
 };
 
 #[derive(Debug)]
-pub(crate) struct Connection<Lifecycle: ConnectionLifecycle> {
+pub struct Connection<Lifecycle: ConnectionLifecycle> {
     stream: mio::net::TcpStream,
     _address: std::net::SocketAddr,
     lifecycle: Lifecycle,
@@ -47,14 +42,15 @@ impl<Lifecycle: ConnectionLifecycle> Drop for Connection<Lifecycle> {
 
 impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
     pub fn new(
-        connection: NewConnection,
+        stream: TcpStream,
+        address: SocketAddr,
         lifecycle: Lifecycle,
         deserializer: Lifecycle::Deserializer,
         serializer: Lifecycle::Serializer,
     ) -> Self {
         Self {
-            stream: connection.stream,
-            _address: connection.address,
+            stream,
+            _address: address,
             lifecycle,
             send_buffer: Default::default(),
             serializer_buffers: Vec::from_iter((0..16).map(|_| Vec::new())),
@@ -69,7 +65,7 @@ impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
     }
 
     /// Drop self and gracefully deregister
-    pub(crate) fn deregister(mut self, registry: &Registry) {
+    pub fn deregister(mut self, registry: &Registry) {
         match registry.deregister(&mut self.stream) {
             Ok(_) => (),
             Err(e) => {
@@ -78,7 +74,8 @@ impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
         }
     }
 
-    pub(crate) fn handle_mio_connection_event(&mut self, event: &mio::event::Event) {
+    /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
+    pub fn handle_mio_connection_event(&mut self, event: &mio::event::Event) {
         if event.is_writable() {
             log::trace!("connection is writable");
             self.writable = true;
@@ -90,7 +87,8 @@ impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
         }
     }
 
-    pub(crate) fn has_work_in_flight(&self) -> bool {
+    /// true when the connection has stuff to do. This can return true when the inbound half of the connection is closed (e.g., nc)
+    pub fn has_work_in_flight(&self) -> bool {
         !(self.work_in_progress.is_empty()
             && self.send_buffer.is_empty()
             && self.receive_buffer_length == 0)
@@ -101,7 +99,7 @@ impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub(crate) fn poll_read_buffer(&mut self) -> std::result::Result<bool, std::io::Error> {
+    pub fn poll_read_buffer(&mut self) -> std::result::Result<bool, std::io::Error> {
         match self.readable {
             ReadState::NotReadable => return Ok(false),
             ReadState::Closed => return Ok(true),
@@ -181,7 +179,8 @@ impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
         Ok(false)
     }
 
-    pub(crate) fn poll_serialize_completions(&mut self, context: &mut Context<'_>) {
+    /// This serializes work-in-progress messages and moves them over into the write queue
+    pub fn poll_serialize_completions(&mut self, context: &mut Context<'_>) {
         loop {
             match pin!(&mut self.work_in_progress).poll_next(context) {
                 std::task::Poll::Ready(Some(message)) => {
@@ -210,7 +209,7 @@ impl<Lifecycle: ConnectionLifecycle> Connection<Lifecycle> {
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    pub(crate) fn poll_write_buffers(&mut self) -> std::result::Result<(), std::io::Error> {
+    pub fn poll_write_buffers(&mut self) -> std::result::Result<(), std::io::Error> {
         if !self.writable {
             return Ok(());
         }

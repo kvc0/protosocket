@@ -1,11 +1,9 @@
 [package]
-name = "protosocket-server"
+name = "protosocket-connection"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-protosocket-connection  = { workspace = true }
-
 bytes                   = { workspace = true }
 futures                 = { workspace = true }
 log                     = { workspace = true }
