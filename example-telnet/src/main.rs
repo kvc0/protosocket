@@ -5,13 +5,13 @@ use std::{
 };
 
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
-use protocolsocket_server::{ConnectionLifecycle, DeserializeError, Deserializer, Serializer};
+use protosocket_server::{ConnectionLifecycle, DeserializeError, Deserializer, Serializer, Server};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut server = protocolsocket_server::Server::new()?;
+    let mut server = Server::new()?;
     let server_context = ServerContext::default();
     let port_nine_thousand =
         server.register_service_listener::<Connection>("127.0.0.1:9000", server_context.clone())?;
@@ -89,7 +89,7 @@ impl Deserializer for StringSerializer {
     fn decode(
         &mut self,
         buffer: impl bytes::Buf,
-    ) -> std::result::Result<(usize, Self::Request), protocolsocket_server::DeserializeError> {
+    ) -> std::result::Result<(usize, Self::Request), DeserializeError> {
         let mut read_buffer: [u8; 1] = [0; 1];
         let read = buffer
             .reader()

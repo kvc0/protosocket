@@ -169,7 +169,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
- "protocolsocket-server",
+ "protosocket-server",
  "tokio",
 ]
 
@@ -182,8 +182,8 @@ dependencies = [
  "futures",
  "log",
  "prost",
- "protocolsocket-prost",
- "protocolsocket-server",
+ "protosocket-prost",
+ "protosocket-server",
  "tokio",
 ]
 
@@ -436,17 +436,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "protocolsocket-prost"
+name = "protosocket-prost"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "log",
  "prost",
- "protocolsocket-server",
+ "protosocket-server",
 ]
 
 [[package]]
-name = "protocolsocket-server"
+name = "protosocket-server"
 version = "0.1.0"
 dependencies = [
  "bytes",

@@ -4,13 +4,13 @@ resolver = "2"
 members = [
     "example-proto",
     "example-telnet",
-    "protocolsocket-prost",
-    "protocolsocket-server",
+    "protosocket-prost",
+    "protosocket-server",
 ]
 
 [workspace.dependencies]
-protocolsocket-server   = { path = "protocolsocket-server" }
-protocolsocket-prost    = { path = "protocolsocket-prost" }
+protosocket-server      = { path = "protosocket-server" }
+protosocket-prost       = { path = "protosocket-prost" }
 
 bytes                   = { version = "1.6" }
 env_logger              = { version = "0.11" }

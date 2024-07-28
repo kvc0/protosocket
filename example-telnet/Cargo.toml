@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-protocolsocket-server   = { workspace = true }
+protosocket-server   = { workspace = true }
 
 bytes                   = { workspace = true }
 env_logger              = { workspace = true }

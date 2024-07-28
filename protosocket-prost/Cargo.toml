@@ -1,10 +1,10 @@
 [package]
-name = "protocolsocket-prost"
+name = "protosocket-prost"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-protocolsocket-server   = { workspace = true }
+protosocket-server   = { workspace = true }
 
 bytes                   = { workspace = true }
 log                     = { workspace = true }
