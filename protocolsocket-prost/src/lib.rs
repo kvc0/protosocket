@@ -101,13 +101,13 @@ where
                     }
                     Err(e) => {
                         log::debug!("could not decode message: {e:?}");
-                        Err(DeserializeError::InvalidMessage)
+                        Err(DeserializeError::InvalidBuffer)
                     }
                 }
             }
             Err(e) => {
                 log::debug!("could not decode message length: {e:?}");
-                Err(DeserializeError::InvalidMessage)
+                Err(DeserializeError::InvalidBuffer)
             }
         }
     }

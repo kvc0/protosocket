@@ -2,7 +2,7 @@
 resolver = "2"
 
 members = [
-    "example",
+    "example-telnet",
     "protocolsocket-prost",
     "protocolsocket-server",
 ]

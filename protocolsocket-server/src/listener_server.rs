@@ -1,8 +1,7 @@
 use mio::{net::TcpListener, Events, Interest, Poll, Token};
 
 use crate::{
-    connection_server::{ConnectionAcceptor, ConnectionServer},
-    interrupted, Result,
+    connection_acceptor::ConnectionAcceptor, connection_server::ConnectionServer, interrupted, Result
 };
 
 pub struct Server {
