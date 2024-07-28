@@ -51,11 +51,12 @@ impl ConnectionLifecycle for Connection {
     }
 
     fn on_message(
-        &self,
+        &mut self,
         mut message: <Self::Deserializer as Deserializer>::Request,
     ) -> Self::MessageFuture {
         // you can execute this directly or you can spawn it. Either way works -
         // it is your choice which thread you run requests on.
+        // Note that you receive &mut self here: This is invoked serially per connection.
         tokio::spawn(async move {
             let seconds: u64 = message
                 .split_ascii_whitespace()

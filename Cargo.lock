@@ -425,6 +425,8 @@ dependencies = [
 name = "protocolsocket-prost"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "log",
  "prost",
  "protocolsocket-server",
 ]

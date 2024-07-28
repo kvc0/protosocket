@@ -213,7 +213,7 @@ pub trait ConnectionLifecycle: Unpin + Sized {
         -> (Self, Self::Deserializer, Self::Serializer);
 
     fn on_message(
-        &self,
+        &mut self,
         message: <Self::Deserializer as Deserializer>::Request,
     ) -> Self::MessageFuture;
 }
