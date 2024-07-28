@@ -7,5 +7,5 @@ pub enum Error {
     #[error("Bad address: {0}")]
     AddressError(#[from] core::net::AddrParseError),
     #[error("Requested resource was dead: ({0})")]
-    Dead(&'static str)
+    Dead(&'static str),
 }

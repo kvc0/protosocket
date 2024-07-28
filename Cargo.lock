@@ -165,7 +165,9 @@ dependencies = [
 name = "example"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "env_logger",
+ "futures",
  "log",
  "protocolsocket-server",
  "tokio",
