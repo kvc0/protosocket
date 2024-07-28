@@ -1,11 +1,6 @@
 use std::cmp::max;
 use std::cmp::min;
 use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::future::Future;
-use std::io::IoSlice;
-use std::io::Read;
-use std::io::Write;
 use std::pin::pin;
 use std::time::Duration;
 
@@ -18,12 +13,7 @@ use mio::Token;
 use crate::connection::Connection;
 use crate::connection_acceptor::ConnectionAcceptor;
 use crate::connection_acceptor::NewConnection;
-use crate::interrupted;
 use crate::types::ConnectionLifecycle;
-use crate::types::DeserializeError;
-use crate::would_block;
-use crate::Error;
-use crate::Result;
 
 /// Once you've configured your connection server the way you want it, execute it on your asynchronous runtime.
 pub struct ConnectionServer<Lifecycle: ConnectionLifecycle> {
@@ -77,10 +67,7 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
         let (inbound_streams, new_streams) = mpsc::unbounded();
 
         (
-            ConnectionAcceptor::new(
-                listener,
-                inbound_streams,
-            ),
+            ConnectionAcceptor::new(listener, inbound_streams),
             Self {
                 new_streams,
                 connection_token_count: 0,
@@ -212,13 +199,14 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
             }
         }
         for connection in drop_connections {
-            if let Some(mut connection) = self.connections.remove(&connection) {
+            if let Some(connection) = self.connections.remove(&connection) {
                 connection.deregister(
                     self.mio_io
-                    .as_mut()
-                    .expect("mio must exist")
-                    .poll
-                    .registry());
+                        .as_mut()
+                        .expect("mio must exist")
+                        .poll
+                        .registry(),
+                );
             }
         }
     }
