@@ -174,6 +174,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-proto"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "env_logger",
+ "futures",
+ "log",
+ "prost",
+ "protocolsocket-prost",
+ "protocolsocket-server",
+ "tokio",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"

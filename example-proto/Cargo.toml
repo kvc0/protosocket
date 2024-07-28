@@ -1,13 +1,23 @@
 [package]
-name = "example"
+name = "example-proto"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "example-proto-server"
+path = "src/server.rs"
+
+[[bin]]
+name = "example-proto-client"
+path = "src/client.rs"
+
 [dependencies]
+protocolsocket-prost    = { workspace = true }
 protocolsocket-server   = { workspace = true }
 
 bytes                   = { workspace = true }
 env_logger              = { workspace = true }
 futures                 = { workspace = true }
 log                     = { workspace = true }
+prost                   = { workspace = true }
 tokio                   = { workspace = true, features = ["full"] }
