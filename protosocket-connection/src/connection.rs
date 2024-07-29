@@ -43,6 +43,26 @@ impl<Lifecycle: ConnectionBindings> Drop for Connection<Lifecycle> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum NetworkStatusEvent {
+    Readable,
+    Writable,
+    ReadableWritable,
+}
+
+impl TryFrom<&mio::event::Event> for NetworkStatusEvent {
+    type Error = ();
+
+    fn try_from(value: &mio::event::Event) -> Result<Self, ()> {
+        match (value.is_readable(), value.is_writable()) {
+            (true, true) => Ok(NetworkStatusEvent::ReadableWritable),
+            (true, false) => Ok(NetworkStatusEvent::Readable),
+            (false, true) => Ok(NetworkStatusEvent::Writable),
+            (false, false) => Err(()),
+        }
+    }
+}
+
 impl<Bindings: ConnectionBindings> Connection<Bindings>
 where <Bindings::Deserializer as Deserializer>::Message: Send
 {
@@ -79,15 +99,22 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    pub fn handle_mio_connection_event(&mut self, event: &mio::event::Event) {
-        if event.is_writable() {
-            log::trace!("connection is writable");
-            self.writable = true;
-        }
-
-        if event.is_readable() {
-            log::trace!("connection is readable");
-            self.readable = ReadState::Readable;
+    pub fn handle_connection_event(&mut self, event: NetworkStatusEvent) {
+        match event {
+            NetworkStatusEvent::Readable => {
+                log::trace!("connection is readable");
+                self.readable = ReadState::Readable;
+            }
+            NetworkStatusEvent::Writable => {
+                log::trace!("connection is writable");
+                self.writable = true;
+            }
+            NetworkStatusEvent::ReadableWritable => {
+                // &mio::event::Event
+                log::trace!("connection is rw");
+                self.writable = true;
+                self.readable = ReadState::Readable;
+            }
         }
     }
 
@@ -101,7 +128,7 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub fn poll_read_buffer(&mut self, context: &mut Context<'_>) -> std::result::Result<bool, std::io::Error> {
+    pub fn poll_read_inbound(&mut self, context: &mut Context<'_>) -> std::result::Result<bool, std::io::Error> {
         match self.readable {
             ReadState::NotReadable => return Ok(false),
             ReadState::Closed => return Ok(true),
@@ -198,7 +225,7 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
     }
 
     /// This serializes work-in-progress messages and moves them over into the write queue
-    pub fn poll_serialize_completions(&mut self, context: &mut Context<'_>) -> Poll<()> {
+    pub fn poll_serialize_oubound(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let mut outbound = Vec::with_capacity(16);
         loop {
             break match self.outbound_messages.poll_recv_many(context, &mut outbound, 16) {

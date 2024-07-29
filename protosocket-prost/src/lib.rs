@@ -1,9 +1,13 @@
+mod error;
+mod prost_client;
 mod prost_serializer;
-mod protocolbuffer_socket;
+mod prost_socket;
 
-pub use protocolbuffer_socket::ProtocolBufferConnectionBindings;
+pub use error::{Error, Result};
+pub use prost_serializer::ProstSerializer;
+pub use prost_socket::ProstServerConnectionBindings;
+pub use prost_socket::ProstClientConnectionBindings;
 
-/// Service task is called here per message; you can choose to directly execute or spawn.
-pub trait MessageExecutor<Message, MessageFuture> {
-    fn execute(&mut self, message: Message) -> MessageFuture;
-}
+pub use prost_client::ClientRegistry;
+pub use prost_client::ClientRegistryDriver;
+pub use prost_client::ConnectionDriver;

@@ -1,9 +1,9 @@
 use std::sync::{atomic::AtomicUsize, Arc};
 
-use futures::{future::BoxFuture, FutureExt};
 use messages::{EchoResponse, Request, Response};
-use protosocket_prost::{MessageExecutor, ProtocolBufferConnectionBindings};
-use protosocket_server::Server;
+use protosocket_connection::{ConnectionBindings, Deserializer, Serializer};
+use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
+use protosocket_server::{Server, ServerConnector};
 
 mod messages;
 
@@ -14,12 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::new()?;
     let server_context = ServerContext::default();
 
-    let port_nine_thousand = server.register_service_listener::<ProtocolBufferConnectionBindings<
-        ServerContext,
-        Request,
-        Response,
-        BoxFuture<'static, Response>,
-    >>("127.0.0.1:9000", server_context.clone())?;
+    let port_nine_thousand = server.register_service_listener::<ServerContext>("127.0.0.1:9000", server_context.clone())?;
 
     std::thread::spawn(move || server.serve().expect("server must serve"));
 
@@ -35,16 +30,31 @@ struct ServerContext {
     _connections: Arc<AtomicUsize>,
 }
 
-impl MessageExecutor<Request, BoxFuture<'static, Response>> for ServerContext {
-    fn execute(&mut self, message: Request) -> BoxFuture<'static, Response> {
-        async move {
-            Response {
-                request_id: message.request_id,
-                body: message.body.map(|body| EchoResponse {
-                    message: body.message,
-                }),
+impl ServerConnector for ServerContext {
+    type Bindings = ProstServerConnectionBindings<Request, Response>;
+
+    fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
+        ProstSerializer::default()
+    }
+
+    fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer {
+        ProstSerializer::default()
+    }
+
+    fn take_new_connection(&self, address: std::net::SocketAddr, outbound: tokio::sync::mpsc::Sender<<<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message>, mut inbound: tokio::sync::mpsc::Receiver<<<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message>) {
+        tokio::spawn(async move {
+            log::info!("new connection from {address:?}");
+
+            while let Some(message) = inbound.recv().await {
+                let outbound = outbound.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = outbound.send(
+                        Response { request_id: message.request_id, body: message.body.map(|b| EchoResponse { message: b.message }) }
+                    ).await {
+                        log::error!("could not send response: {e:?}");
+                    }
+                });
             }
-        }
-        .boxed()
+        });
     }
 }

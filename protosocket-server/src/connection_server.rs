@@ -11,6 +11,7 @@ use mio::Token;
 use protosocket_connection::Connection;
 use protosocket_connection::ConnectionBindings;
 use protosocket_connection::Deserializer;
+use protosocket_connection::NetworkStatusEvent;
 use protosocket_connection::Serializer;
 use tokio::sync::mpsc;
 
@@ -169,8 +170,12 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
 
         for event in events.iter() {
             let token = event.token();
+            let event: NetworkStatusEvent = match event.try_into() {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             if let Some(connection) = self.connections.get_mut(&token) {
-                connection.handle_mio_connection_event(event);
+                connection.handle_connection_event(event);
             } else {
                 log::debug!(
                     "something happened for a socket that isn't connected anymore {event:?}"
@@ -183,13 +188,14 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
     fn poll_connections(mut self: std::pin::Pin<&mut Self>, context: &mut std::task::Context) {
         let mut drop_connections = Vec::new();
         for (token, connection) in self.connections.iter_mut() {
-            match connection.poll_read_buffer(context) {
+            match connection.poll_read_inbound(context) {
                 Ok(false) => {
                     // log::trace!("checked inbound connection buffer");
                 }
                 Ok(true) => {
                     if connection.has_work_in_flight() {
-                        log::trace!("remote closed connection but work is in flight - extending lifetime a little");
+                        log::trace!("remote closed connection but work is in flight");
+                        drop_connections.push(*token);
                     } else {
                         log::trace!("remote closed connection");
                         drop_connections.push(*token);
@@ -201,7 +207,7 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
                 }
             }
 
-            connection.poll_serialize_completions(context);
+            connection.poll_serialize_oubound(context);
 
             if let Err(e) = connection.poll_write_buffers() {
                 log::warn!("dropping connection: {e:?}");

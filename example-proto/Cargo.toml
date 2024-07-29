@@ -12,8 +12,9 @@ name = "example-proto-client"
 path = "src/client.rs"
 
 [dependencies]
-protosocket-prost    = { workspace = true }
-protosocket-server   = { workspace = true }
+protosocket-connection  = { workspace = true }
+protosocket-prost       = { workspace = true }
+protosocket-server      = { workspace = true }
 
 bytes                   = { workspace = true }
 env_logger              = { workspace = true }

@@ -183,6 +183,7 @@ dependencies = [
  "futures",
  "log",
  "prost",
+ "protosocket-connection",
  "protosocket-prost",
  "protosocket-server",
  "tokio",
@@ -468,8 +469,11 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "log",
+ "mio",
  "prost",
  "protosocket-connection",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

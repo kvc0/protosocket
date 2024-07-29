@@ -8,4 +8,7 @@ protosocket-connection  = { workspace = true }
 
 bytes                   = { workspace = true }
 log                     = { workspace = true }
+mio                     = { workspace = true }
 prost                   = { workspace = true }
+thiserror               = { workspace = true }
+tokio                   = { workspace = true }
