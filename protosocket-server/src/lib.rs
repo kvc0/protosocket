@@ -4,6 +4,7 @@ pub(crate) mod error;
 pub(crate) mod listener_server;
 
 pub use connection_server::ConnectionServer;
+pub use connection_server::ServerConnector;
 pub use error::Error;
 pub use error::Result;
 pub use listener_server::Server;

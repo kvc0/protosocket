@@ -5,8 +5,8 @@ use std::{
 };
 
 use futures::{future::BoxFuture, FutureExt, TryFutureExt};
-use protosocket_connection::{ConnectionLifecycle, DeserializeError, Deserializer, Serializer};
-use protosocket_server::Server;
+use protosocket_connection::{ConnectionBindings, DeserializeError, Deserializer, Serializer};
+use protosocket_server::{Server, ServerConnector};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::new()?;
     let server_context = ServerContext::default();
     let port_nine_thousand =
-        server.register_service_listener::<Connection>("127.0.0.1:9000", server_context.clone())?;
+        server.register_service_listener::<ServerContext>("127.0.0.1:9000", server_context.clone())?;
 
     std::thread::spawn(move || server.serve().expect("server must serve"));
 
@@ -30,67 +30,64 @@ struct ServerContext {
     connections: Arc<AtomicUsize>,
 }
 
-struct Connection {
-    _seen: usize,
+impl ServerConnector for ServerContext {
+    type Bindings = StringContext;
+
+    fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
+        StringSerializer
+    }
+
+    fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer {
+        StringSerializer
+    }
+
+    fn take_new_connection(&self, address: std::net::SocketAddr, outbound: tokio::sync::mpsc::Sender<<<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message>, mut inbound: tokio::sync::mpsc::Receiver<<<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message>) {
+        tokio::spawn(async move {
+            log::info!("new connection from {address:?}");
+            while let Some(mut message) = inbound.recv().await {
+                let outbound = outbound.clone();
+                tokio::spawn(async move {
+                    let seconds: u64 = message
+                        .split_ascii_whitespace()
+                        .next()
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap_or(0);
+                    tokio::time::sleep(Duration::from_secs(seconds)).await;
+                    message.push_str(" RAN");
+                    if let Err(e) = outbound.send(message).await {
+                        log::error!("send error: {e:?}");
+                    }
+                });
+            }
+        });
+    }
 }
 
-impl ConnectionLifecycle for Connection {
+struct StringContext;
+
+impl ConnectionBindings for StringContext {
     type Deserializer = StringSerializer;
     type Serializer = StringSerializer;
-    type ServerState = ServerContext;
-    type MessageFuture = BoxFuture<'static, String>;
-
-    fn on_connect(
-        server_state: &Self::ServerState,
-    ) -> (Self, Self::Serializer, Self::Deserializer) {
-        let seen = server_state
-            .connections
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        log::info!("connected {seen}");
-        (Self { _seen: 0 }, StringSerializer, StringSerializer)
-    }
-
-    fn on_message(
-        &mut self,
-        mut message: <Self::Deserializer as Deserializer>::Request,
-    ) -> Self::MessageFuture {
-        // you can execute this directly or you can spawn it. Either way works -
-        // it is your choice which thread you run requests on.
-        // Note that you receive &mut self here: This is invoked serially per connection.
-        tokio::spawn(async move {
-            let seconds: u64 = message
-                .split_ascii_whitespace()
-                .next()
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            tokio::time::sleep(Duration::from_secs(seconds)).await;
-            message.push_str(" RAN");
-            message
-        })
-        .unwrap_or_else(|_e| "join error".to_string())
-        .boxed()
-    }
 }
 
 struct StringSerializer;
 
 impl Serializer for StringSerializer {
-    type Response = String;
+    type Message = String;
 
-    fn encode(&mut self, mut response: Self::Response, buffer: &mut impl bytes::BufMut) {
+    fn encode(&mut self, mut response: Self::Message, buffer: &mut impl bytes::BufMut) {
         response.push_str(" ENCODED\n");
         buffer.put(response.as_bytes());
     }
 }
 impl Deserializer for StringSerializer {
-    type Request = String;
+    type Message = String;
 
     fn decode(
         &mut self,
         buffer: impl bytes::Buf,
-    ) -> std::result::Result<(usize, Self::Request), DeserializeError> {
+    ) -> std::result::Result<(usize, Self::Message), DeserializeError> {
         let mut read_buffer: [u8; 1] = [0; 1];
         let read = buffer
             .reader()

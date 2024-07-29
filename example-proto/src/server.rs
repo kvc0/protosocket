@@ -2,7 +2,7 @@ use std::sync::{atomic::AtomicUsize, Arc};
 
 use futures::{future::BoxFuture, FutureExt};
 use messages::{EchoResponse, Request, Response};
-use protosocket_prost::{MessageExecutor, ProtocolBufferSocket};
+use protosocket_prost::{MessageExecutor, ProtocolBufferConnectionBindings};
 use protosocket_server::Server;
 
 mod messages;
@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::new()?;
     let server_context = ServerContext::default();
 
-    let port_nine_thousand = server.register_service_listener::<ProtocolBufferSocket<
+    let port_nine_thousand = server.register_service_listener::<ProtocolBufferConnectionBindings<
         ServerContext,
         Request,
         Response,

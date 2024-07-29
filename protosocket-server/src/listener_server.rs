@@ -1,9 +1,8 @@
 use mio::{net::TcpListener, Events, Interest, Poll, Token};
-use protosocket_connection::ConnectionLifecycle;
 
 use crate::{
     connection_acceptor::ConnectionAcceptor, connection_server::ConnectionServer, interrupted,
-    Result,
+    Result, ServerConnector,
 };
 
 pub struct Server {
@@ -26,11 +25,11 @@ impl Server {
     }
 
     /// address like "127.0.0.1:9000"
-    pub fn register_service_listener<Lifecycle: ConnectionLifecycle>(
+    pub fn register_service_listener<Connector: ServerConnector>(
         &mut self,
         address: impl Into<String>,
-        server_state: Lifecycle::ServerState,
-    ) -> Result<ConnectionServer<Lifecycle>> {
+        server_state: Connector,
+    ) -> Result<ConnectionServer<Connector>> {
         let addr = address.into().parse()?;
         let token = Token(self.services.len());
         log::trace!("new service listener index {} on {addr:?}", token.0);

@@ -1,27 +1,37 @@
 use std::cmp::max;
 use std::cmp::min;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::pin::pin;
 use std::time::Duration;
 
-use futures::channel::mpsc;
-use futures::Stream;
 use mio::net::TcpListener;
 use mio::Interest;
 use mio::Token;
 use protosocket_connection::Connection;
-use protosocket_connection::ConnectionLifecycle;
+use protosocket_connection::ConnectionBindings;
+use protosocket_connection::Deserializer;
+use protosocket_connection::Serializer;
+use tokio::sync::mpsc;
 
 use crate::connection_acceptor::ConnectionAcceptor;
 use crate::connection_acceptor::NewConnection;
 
+pub trait ServerConnector: Unpin {
+    type Bindings: ConnectionBindings;
+    
+    fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer;
+    fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer;
+    fn take_new_connection(&self, address: SocketAddr, outbound: mpsc::Sender<<<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message>, inbound: mpsc::Receiver<<<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message>);
+}
+
 /// Once you've configured your connection server the way you want it, execute it on your asynchronous runtime.
-pub struct ConnectionServer<Lifecycle: ConnectionLifecycle> {
+pub struct ConnectionServer<Connector: ServerConnector> {
     new_streams: mpsc::UnboundedReceiver<NewConnection>,
     connection_token_count: usize,
-    connections: HashMap<Token, Connection<Lifecycle>>,
+    connections: HashMap<Token, Connection<Connector::Bindings>>,
     mio_io: Option<Mio>,
-    server_state: Lifecycle::ServerState,
+    server_state: Connector,
     /// used to let the server settle into waiting for readiness
     poll_backoff: Duration,
 }
@@ -31,7 +41,7 @@ struct Mio {
     events: mio::Events,
 }
 
-impl<Lifecycle: ConnectionLifecycle> std::future::Future for ConnectionServer<Lifecycle> {
+impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connector> {
     type Output = ();
 
     fn poll(
@@ -59,12 +69,13 @@ impl<Lifecycle: ConnectionLifecycle> std::future::Future for ConnectionServer<Li
     }
 }
 
-impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
+impl<Connector: ServerConnector> ConnectionServer<Connector>
+{
     pub(crate) fn new(
-        server_state: Lifecycle::ServerState,
+        server_state: Connector,
         listener: TcpListener,
     ) -> (ConnectionAcceptor, Self) {
-        let (inbound_streams, new_streams) = mpsc::unbounded();
+        let (inbound_streams, new_streams) = mpsc::unbounded_channel();
 
         (
             ConnectionAcceptor::new(listener, inbound_streams),
@@ -88,8 +99,8 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
         context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<<Self as std::future::Future>::Output> {
         loop {
-            break match pin!(&mut self.new_streams).poll_next(context) {
-                std::task::Poll::Ready(Some(mut connection)) => {
+            break match pin!(&mut self.new_streams).poll_recv(context) {
+                std::task::Poll::Ready(Some(mut new_connection)) => {
                     let token = Token(self.connection_token_count);
                     self.connection_token_count += 1;
 
@@ -100,7 +111,7 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
                         .poll
                         .registry()
                         .register(
-                            &mut connection.stream,
+                            &mut new_connection.stream,
                             token,
                             Interest::READABLE.add(Interest::WRITABLE),
                         )
@@ -108,12 +119,12 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
                         log::error!("failed to register stream: {e:?}");
                         std::task::Poll::Ready(())
                     } else {
-                        let (lifecycle, deserializer, serializer) =
-                            Lifecycle::on_connect(&self.server_state);
-                        self.connections.insert(
-                            token,
-                            Connection::new(connection.stream, connection.address, lifecycle, deserializer, serializer),
-                        );
+                        let serializer = self.server_state.serializer();
+                        let deserializer = self.server_state.deserializer();
+                        let (outbound, inbound, connection) = Connection::new(new_connection.stream, deserializer, serializer);
+                        self.server_state.take_new_connection(new_connection.address, outbound, inbound);
+
+                        self.connections.insert(token, connection);
                         continue;
                     }
                 }
@@ -172,7 +183,7 @@ impl<Lifecycle: ConnectionLifecycle> ConnectionServer<Lifecycle> {
     fn poll_connections(mut self: std::pin::Pin<&mut Self>, context: &mut std::task::Context) {
         let mut drop_connections = Vec::new();
         for (token, connection) in self.connections.iter_mut() {
-            match connection.poll_read_buffer() {
+            match connection.poll_read_buffer(context) {
                 Ok(false) => {
                     // log::trace!("checked inbound connection buffer");
                 }

@@ -1,18 +1,16 @@
-use std::future::Future;
-
 pub trait Serializer: Unpin {
-    type Response;
+    type Message: Send;
 
-    fn encode(&mut self, response: Self::Response, buffer: &mut impl bytes::BufMut);
+    fn encode(&mut self, response: Self::Message, buffer: &mut impl bytes::BufMut);
 }
 
 pub trait Deserializer: Unpin {
-    type Request;
+    type Message: Send;
 
     fn decode(
         &mut self,
         buffer: impl bytes::Buf,
-    ) -> std::result::Result<(usize, Self::Request), DeserializeError>;
+    ) -> std::result::Result<(usize, Self::Message), DeserializeError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -28,18 +26,7 @@ pub enum DeserializeError {
     SkipMessage { distance: usize },
 }
 
-pub trait ConnectionLifecycle: Unpin + Sized {
-    type ServerState: Unpin;
+pub trait ConnectionBindings {
     type Deserializer: Deserializer;
     type Serializer: Serializer;
-    type MessageFuture: Future<Output = <Self::Serializer as Serializer>::Response>;
-
-    /// A new connection lifecycle starts here. If you have a state machine, initialize it here. This is your constructor.
-    fn on_connect(server_state: &Self::ServerState)
-        -> (Self, Self::Deserializer, Self::Serializer);
-
-    fn on_message(
-        &mut self,
-        message: <Self::Deserializer as Deserializer>::Request,
-    ) -> Self::MessageFuture;
 }

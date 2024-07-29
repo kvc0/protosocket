@@ -1,5 +1,5 @@
-use futures::channel::mpsc;
 use mio::net::TcpListener;
+use tokio::sync::mpsc;
 
 use crate::{would_block, Error};
 
@@ -43,7 +43,7 @@ impl ConnectionAcceptor {
         }
         log::debug!("accepted connection {connection:?}");
         self.inbound_streams
-            .unbounded_send(connection)
+            .send(connection)
             .map_err(|_e| Error::Dead("connection server"))
     }
 }

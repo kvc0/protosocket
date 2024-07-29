@@ -11,9 +11,9 @@ where
     Request: prost::Message + Default + Unpin,
     Response: prost::Message + Unpin,
 {
-    type Response = Response;
+    type Message = Response;
 
-    fn encode(&mut self, response: Self::Response, buffer: &mut impl bytes::BufMut) {
+    fn encode(&mut self, response: Self::Message, buffer: &mut impl bytes::BufMut) {
         match response.encode_length_delimited(buffer) {
             Ok(_) => {
                 log::trace!("encoded reply");
@@ -29,16 +29,16 @@ where
     Request: prost::Message + Default + Unpin,
     Response: prost::Message + Unpin,
 {
-    type Request = Request;
+    type Message = Request;
 
     fn decode(
         &mut self,
         buffer: impl bytes::Buf,
-    ) -> std::result::Result<(usize, Self::Request), DeserializeError> {
+    ) -> std::result::Result<(usize, Self::Message), DeserializeError> {
         match prost::decode_length_delimiter(buffer.chunk()) {
             Ok(length) => {
                 log::trace!("reading {length} bytes from buffer");
-                match <Self::Request as prost::Message>::decode_length_delimited(buffer) {
+                match <Self::Message as prost::Message>::decode_length_delimited(buffer) {
                     Ok(message) => {
                         log::trace!("decoded request");
                         Ok((0, message))
