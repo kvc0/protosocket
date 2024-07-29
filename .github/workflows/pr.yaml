@@ -1,0 +1,37 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install protoc
+      run: ./install_protoc.sh
+    - uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          override: true
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Rustfmt
+      run: cargo fmt -- --check
+    - name: Clippy
+      run: |
+        cargo --version
+        cargo clippy --version
+        cargo clippy --all-targets --all-features -- -D warnings -W clippy::unwrap_used
+    - name: Run tests
+      run: cargo test --verbose
+
+    - name: Ensure change is publishable
+      run: |
+        cargo publish --dry-run --all-features -p protosocket
+        cargo publish --dry-run --all-features -p protosocket-prost
+        cargo publish --dry-run --all-features -p protosocket-server

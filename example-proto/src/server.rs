@@ -2,7 +2,7 @@ use std::sync::{atomic::AtomicUsize, Arc};
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use messages::{EchoResponse, Request, Response};
-use protosocket_connection::{ConnectionBindings, Deserializer, Serializer};
+use protosocket::{ConnectionBindings, Deserializer, Serializer};
 use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
 use protosocket_server::{Server, ServerConnector};
 

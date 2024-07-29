@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use protosocket_connection::{DeserializeError, Deserializer, Serializer};
+use protosocket::{DeserializeError, Deserializer, Serializer};
 
 #[derive(Default)]
 pub struct ProstSerializer<Request, Response> {

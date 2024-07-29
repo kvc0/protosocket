@@ -2,9 +2,10 @@
 name = "example"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [dependencies]
-protosocket-connection  = { workspace = true }
+protosocket             = { workspace = true }
 protosocket-server      = { workspace = true }
 
 bytes                   = { workspace = true }

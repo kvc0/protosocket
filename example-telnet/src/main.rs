@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use protosocket_connection::{ConnectionBindings, DeserializeError, Deserializer, Serializer};
+use protosocket::{ConnectionBindings, DeserializeError, Deserializer, Serializer};
 use protosocket_server::{Server, ServerConnector};
 
 #[allow(clippy::expect_used)]

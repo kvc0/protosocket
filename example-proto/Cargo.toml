@@ -2,6 +2,7 @@
 name = "example-proto"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [[bin]]
 name = "example-proto-server"
@@ -12,7 +13,7 @@ name = "example-proto-client"
 path = "src/client.rs"
 
 [dependencies]
-protosocket-connection  = { workspace = true }
+protosocket             = { workspace = true }
 protosocket-prost       = { workspace = true }
 protosocket-server      = { workspace = true }
 

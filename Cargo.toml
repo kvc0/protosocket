@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.dependencies]
-protosocket-connection  = { path = "protosocket-connection" }
+protosocket             = { path = "protosocket-connection" }
 protosocket-server      = { path = "protosocket-server" }
 protosocket-prost       = { path = "protosocket-prost" }
 

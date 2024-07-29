@@ -8,7 +8,7 @@ use std::{
 };
 
 use mio::{net::TcpStream, Interest, Token};
-use protosocket_connection::{Connection, ConnectionBindings, NetworkStatusEvent};
+use protosocket::{Connection, ConnectionBindings, NetworkStatusEvent};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{Error, ProstClientConnectionBindings, ProstSerializer};

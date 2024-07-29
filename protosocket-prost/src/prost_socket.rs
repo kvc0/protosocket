@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use protosocket_connection::ConnectionBindings;
+use protosocket::ConnectionBindings;
 
 use crate::prost_serializer::ProstSerializer;
 

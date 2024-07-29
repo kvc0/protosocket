@@ -2,9 +2,16 @@
 name = "protosocket-server"
 version = "0.1.0"
 edition = "2021"
+description = "Message-oriented nonblocking tcp stream - server tools"
+license = "Apache-2.0"
+authors = ["kvc0"]
+readme = "../README.md"
+repository = "https://github.com/kvc0/protosocket"
+keywords = ["tcp", "protobuf", "service", "performance"]
+categories = ["web-programming"]
 
 [dependencies]
-protosocket-connection  = { workspace = true }
+protosocket             = { workspace = true }
 
 bytes                   = { workspace = true }
 futures                 = { workspace = true }

@@ -11,11 +11,11 @@ use std::time::Duration;
 use mio::net::TcpListener;
 use mio::Interest;
 use mio::Token;
-use protosocket_connection::Connection;
-use protosocket_connection::ConnectionBindings;
-use protosocket_connection::Deserializer;
-use protosocket_connection::NetworkStatusEvent;
-use protosocket_connection::Serializer;
+use protosocket::Connection;
+use protosocket::ConnectionBindings;
+use protosocket::Deserializer;
+use protosocket::NetworkStatusEvent;
+use protosocket::Serializer;
 use tokio::sync::mpsc;
 
 use crate::connection_acceptor::ConnectionAcceptor;
