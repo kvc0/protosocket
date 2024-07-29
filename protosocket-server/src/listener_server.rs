@@ -40,7 +40,7 @@ impl Server {
             token,
             Interest::READABLE.add(Interest::WRITABLE),
         )?;
-        let (acceptor, server) = ConnectionServer::new(server_state, listener);
+        let (acceptor, server) = ConnectionServer::new(server_state, listener)?;
 
         self.services.push(acceptor);
 

@@ -8,8 +8,7 @@ pub struct ProstServerConnectionBindings<Request, Response> {
     _phantom: PhantomData<(Request, Response)>,
 }
 
-impl<Request, Response> ConnectionBindings
-    for ProstServerConnectionBindings<Request, Response>
+impl<Request, Response> ConnectionBindings for ProstServerConnectionBindings<Request, Response>
 where
     Request: prost::Message + Default + Unpin,
     Response: prost::Message + Unpin,
@@ -22,8 +21,7 @@ pub struct ProstClientConnectionBindings<Request, Response> {
     _phantom: PhantomData<(Request, Response)>,
 }
 
-impl<Request, Response> ConnectionBindings
-    for ProstClientConnectionBindings<Request, Response>
+impl<Request, Response> ConnectionBindings for ProstClientConnectionBindings<Request, Response>
 where
     Request: prost::Message + Default + Unpin,
     Response: prost::Message + Default + Unpin,

@@ -2,7 +2,6 @@ use std::{
     cmp::min,
     collections::VecDeque,
     io::{IoSlice, Read, Write},
-    pin::pin,
     task::{Context, Poll},
 };
 
@@ -64,28 +63,38 @@ impl TryFrom<&mio::event::Event> for NetworkStatusEvent {
 }
 
 impl<Bindings: ConnectionBindings> Connection<Bindings>
-where <Bindings::Deserializer as Deserializer>::Message: Send
+where
+    <Bindings::Deserializer as Deserializer>::Message: Send,
 {
+    #[allow(clippy::type_complexity)]
     pub fn new(
         stream: TcpStream,
         deserializer: Bindings::Deserializer,
         serializer: Bindings::Serializer,
-    ) -> (mpsc::Sender<<Bindings::Serializer as Serializer>::Message>, mpsc::Receiver<<Bindings::Deserializer as Deserializer>::Message>, Self) {
+    ) -> (
+        mpsc::Sender<<Bindings::Serializer as Serializer>::Message>,
+        mpsc::Receiver<<Bindings::Deserializer as Deserializer>::Message>,
+        Self,
+    ) {
         let (outbound_sender, outbound_receiver) = mpsc::channel(128);
         let (inbound_sender, inbound_receiver) = mpsc::channel(128);
-        (outbound_sender, inbound_receiver, Self {
-            stream,
-            outbound_messages: outbound_receiver,
-            inbound_messages: PollSender::new(inbound_sender),
-            send_buffer: Default::default(),
-            serializer_buffers: Vec::from_iter((0..1).map(|_| Vec::new())),
-            receive_buffer: Vec::new(),
-            receive_buffer_length: 0,
-            deserializer,
-            serializer,
-            readable: ReadState::NotReadable,
-            writable: false,
-        })
+        (
+            outbound_sender,
+            inbound_receiver,
+            Self {
+                stream,
+                outbound_messages: outbound_receiver,
+                inbound_messages: PollSender::new(inbound_sender),
+                send_buffer: Default::default(),
+                serializer_buffers: Vec::from_iter((0..1).map(|_| Vec::new())),
+                receive_buffer: Vec::new(),
+                receive_buffer_length: 0,
+                deserializer,
+                serializer,
+                readable: ReadState::NotReadable,
+                writable: false,
+            },
+        )
     }
 
     /// Drop self and gracefully deregister
@@ -128,7 +137,10 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub fn poll_read_inbound(&mut self, context: &mut Context<'_>) -> std::result::Result<bool, std::io::Error> {
+    pub fn poll_read_inbound(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> std::result::Result<bool, std::io::Error> {
         match self.readable {
             ReadState::NotReadable => return Ok(false),
             ReadState::Closed => return Ok(true),
@@ -151,8 +163,7 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
             .read(&mut self.receive_buffer[self.receive_buffer_length..])
         {
             Ok(0) => {
-                // Reading 0 bytes means the other side has closed the
-                // connection.
+                log::debug!("connection was shut down as recv returned 0");
                 self.readable = ReadState::Closed;
                 return Ok(true);
             }
@@ -167,12 +178,13 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
                             // ready
                         }
                         std::task::Poll::Ready(Err(_e)) => {
+                            log::debug!("inbound channel closed - closing connection");
                             self.readable = ReadState::Closed;
-                            return Ok(true)
+                            return Ok(true);
                         }
                         std::task::Poll::Pending => {
                             // can't accept any more inbound messages right now
-                            break
+                            break;
                         }
                     }
 
@@ -181,14 +193,16 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
                         Ok((length, message)) => {
                             consumed += length;
                             if let Err(_e) = self.inbound_messages.send_item(message) {
+                                log::warn!("failure to send to inbound channel after reserving space - closing channel");
                                 self.readable = ReadState::Closed;
-                                return Ok(true)
+                                return Ok(true);
                             }
                         }
                         Err(e) => {
                             match e {
                                 DeserializeError::IncompleteBuffer { next_message_size } => {
                                     log::debug!("waiting for the next message of length {next_message_size}");
+                                    break;
                                 }
                                 DeserializeError::InvalidBuffer => {
                                     log::debug!("message was invalid");
@@ -206,6 +220,7 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
                 if consumed != 0 && self.receive_buffer_length != 0 {
                     // partial read - have to shift the buffer because I haven't made it smarter.
                     // at least I'm pulling multiple messages out if there's a bunch of little messages in a big buffer...
+                    log::debug!("shifting buffer by {consumed} bytes");
                     self.receive_buffer.rotate_left(consumed);
                 }
             }
@@ -219,7 +234,10 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
                 log::trace!("interrupted, so try again later");
             }
             // Other errors we'll consider fatal.
-            Err(err) => return Err(err),
+            Err(err) => {
+                log::debug!("error while reading from tcp stream: {err:?}");
+                return Err(err);
+            }
         }
         Ok(false)
     }
@@ -227,36 +245,46 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
     /// This serializes work-in-progress messages and moves them over into the write queue
     pub fn poll_serialize_oubound(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let mut outbound = Vec::with_capacity(16);
-        loop {
-            break match self.outbound_messages.poll_recv_many(context, &mut outbound, 16) {
-                std::task::Poll::Ready(how_many) => {
-                    log::trace!("polled {how_many} messages to send");
-                    for message in outbound.drain(..) {
-                        let mut buffer = self.serializer_buffers.pop().unwrap_or_default();
-                        self.serializer.encode(message, &mut buffer);
-                        log::trace!(
-                            "serialized message and enqueueing outbound buffer: {}b",
-                            buffer.len()
-                        );
-                        // queue up a writev
-                        self.send_buffer.push_back(buffer);
-                    }
-                    // look for more messages
-                    continue
+        match self
+            .outbound_messages
+            .poll_recv_many(context, &mut outbound, 16)
+        {
+            std::task::Poll::Ready(how_many) => {
+                log::trace!("polled {how_many} messages to send");
+                for message in outbound.drain(..) {
+                    let mut buffer = self.serializer_buffers.pop().unwrap_or_default();
+                    self.serializer.encode(message, &mut buffer);
+                    log::trace!(
+                        "serialized message and enqueueing outbound buffer: {}b",
+                        buffer.len()
+                    );
+                    // queue up a writev
+                    self.send_buffer.push_back(buffer);
                 }
-                Poll::Pending => {
-                    Poll::Pending
-                }
+                // look for more messages
+                context.waker().wake_by_ref();
+                Poll::Pending
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
     pub fn poll_write_buffers(&mut self) -> std::result::Result<(), std::io::Error> {
-        if !self.writable {
+        if !self.writable || self.send_buffer.is_empty() {
             return Ok(());
         }
-        let buffers: Vec<IoSlice> = self.send_buffer.iter().map(|v| IoSlice::new(v)).collect();
+
+        /// I need to figure out how to get this from the os rather than hardcoding. 16 is the lowest I've seen mention of,
+        /// and I've seen 1024 more commonly.
+        const UIO_MAXIOV: usize = 128;
+
+        let buffers: Vec<IoSlice> = self
+            .send_buffer
+            .iter()
+            .take(UIO_MAXIOV)
+            .map(|v| IoSlice::new(v))
+            .collect();
         match self.stream.write_vectored(&buffers) {
             Ok(written) => {
                 self.rotate_send_buffers(written);
@@ -271,25 +299,40 @@ where <Bindings::Deserializer as Deserializer>::Message: Send
                 log::trace!("write interrupted - try again later");
             }
             // other errors terminate the stream
-            Err(err) => return Err(err),
+            Err(err) => {
+                log::debug!("error while writing to tcp stream: {err:?}, buffers: {buffers:?}");
+                return Err(err);
+            }
         }
         Ok(())
     }
 
     fn rotate_send_buffers(&mut self, mut written: usize) {
-        while let Some(mut front) = self.send_buffer.pop_front() {
-            if front.len() < written {
-                written -= front.len();
+        while 0 < written {
+            if let Some(mut front) = self.send_buffer.pop_front() {
+                if front.len() <= written {
+                    written -= front.len();
+                    log::trace!(
+                        "rotated buffer of length {}, remaining: {}",
+                        front.len(),
+                        written
+                    );
 
-                // Reuse the buffer!
-                // SAFETY: This is purely a buffer, and u8 does not require drop.
-                unsafe { front.set_len(0) };
-                self.serializer_buffers.push(front);
+                    // Reuse the buffer!
+                    // SAFETY: This is purely a buffer, and u8 does not require drop.
+                    unsafe { front.set_len(0) };
+                    self.serializer_buffers.push(front);
+                } else {
+                    // Walk the buffer forward through a replacement. It will still amortize the allocation,
+                    // but this is not optimal. It's relatively easier to manage though, and I'm a busy person.
+                    log::debug!("shifting serialized buffer by {written} bytes");
+                    let replacement = front[written..].to_vec();
+                    self.send_buffer.push_front(replacement);
+                    break;
+                }
             } else {
-                // Walk the buffer forward through a replacement. It will still amortize the allocation,
-                // but this is not optimal. It's relatively easier to manage though, and I'm a busy person.
-                let replacement = front[written..].to_vec();
-                self.send_buffer.push_front(replacement);
+                log::debug!("rotated buffers. {} remaining", self.send_buffer.len());
+                break;
             }
         }
     }

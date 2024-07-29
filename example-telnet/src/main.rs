@@ -4,18 +4,18 @@ use std::{
     time::Duration,
 };
 
-use futures::{future::BoxFuture, FutureExt, TryFutureExt};
 use protosocket_connection::{ConnectionBindings, DeserializeError, Deserializer, Serializer};
 use protosocket_server::{Server, ServerConnector};
 
+#[allow(clippy::expect_used)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let mut server = Server::new()?;
     let server_context = ServerContext::default();
-    let port_nine_thousand =
-        server.register_service_listener::<ServerContext>("127.0.0.1:9000", server_context.clone())?;
+    let port_nine_thousand = server
+        .register_service_listener::<ServerContext>("127.0.0.1:9000", server_context.clone())?;
 
     std::thread::spawn(move || server.serve().expect("server must serve"));
 
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[derive(Default, Clone)]
 struct ServerContext {
-    connections: Arc<AtomicUsize>,
+    _connections: Arc<AtomicUsize>,
 }
 
 impl ServerConnector for ServerContext {
@@ -41,7 +41,16 @@ impl ServerConnector for ServerContext {
         StringSerializer
     }
 
-    fn take_new_connection(&self, address: std::net::SocketAddr, outbound: tokio::sync::mpsc::Sender<<<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message>, mut inbound: tokio::sync::mpsc::Receiver<<<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message>) {
+    fn take_new_connection(
+        &self,
+        address: std::net::SocketAddr,
+        outbound: tokio::sync::mpsc::Sender<
+            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
+        >,
+        mut inbound: tokio::sync::mpsc::Receiver<
+            <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
+        >,
+    ) {
         tokio::spawn(async move {
             log::info!("new connection from {address:?}");
             while let Some(mut message) = inbound.recv().await {

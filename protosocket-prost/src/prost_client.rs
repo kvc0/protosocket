@@ -1,12 +1,17 @@
 use std::{
-    cmp::{max, min}, collections::HashMap, future::Future, pin::Pin, task::{Context, Poll}, time::Duration
+    cmp::{max, min},
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
 };
 
 use mio::{net::TcpStream, Interest, Token};
 use protosocket_connection::{Connection, ConnectionBindings, NetworkStatusEvent};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{Error, ProstClientConnectionBindings, ProstSerializer, ProstServerConnectionBindings};
+use crate::{Error, ProstClientConnectionBindings, ProstSerializer};
 
 pub struct ClientRegistry {
     new_clients: mpsc::UnboundedSender<RegisterClient>,
@@ -28,8 +33,12 @@ impl ClientRegistry {
     pub async fn register_client<Request, Response>(
         &self,
         address: impl Into<String>,
-    ) -> crate::Result<(mpsc::Sender<Request>, mpsc::Receiver<Response>, ConnectionDriver<ProstClientConnectionBindings<Request, Response>>)>
-     where
+    ) -> crate::Result<(
+        mpsc::Sender<Request>,
+        mpsc::Receiver<Response>,
+        ConnectionDriver<ProstClientConnectionBindings<Request, Response>>,
+    )>
+    where
         Request: prost::Message + Default + Unpin,
         Response: prost::Message + Default + Unpin,
     {
@@ -40,14 +49,17 @@ impl ClientRegistry {
         self.new_clients
             .send(RegisterClient { stream, completion })
             .map_err(|_e| Error::Dead("client registry driver is dead"))?;
-        let RegisteredClient { stream, network_readiness } =
-            registration.await.map_err(|_e| Error::Dead("canceled"))?;
-
-        let (outbound, inbound, connection) = Connection::<ProstClientConnectionBindings<Request, Response>>::new(
+        let RegisteredClient {
             stream,
-            ProstSerializer::default(),
-            ProstSerializer::default(),
-        );
+            network_readiness,
+        } = registration.await.map_err(|_e| Error::Dead("canceled"))?;
+
+        let (outbound, inbound, connection) =
+            Connection::<ProstClientConnectionBindings<Request, Response>>::new(
+                stream,
+                ProstSerializer::default(),
+                ProstSerializer::default(),
+            );
         let connection_driver = ConnectionDriver {
             connection,
             network_readiness,
@@ -96,7 +108,11 @@ impl ClientRegistryDriver {
                 Poll::Ready(Some(mut registration)) => {
                     let token = Token(self.client_counter);
                     self.client_counter += 1;
-                    match self.poll.registry().register(&mut registration.stream, token, Interest::READABLE | Interest::WRITABLE) {
+                    match self.poll.registry().register(
+                        &mut registration.stream,
+                        token,
+                        Interest::READABLE | Interest::WRITABLE,
+                    ) {
                         Ok(_) => {
                             let (readiness_sender, network_readiness) = mpsc::unbounded_channel();
                             self.clients.insert(token, readiness_sender);
@@ -105,7 +121,7 @@ impl ClientRegistryDriver {
                                 stream: registration.stream,
                                 network_readiness,
                             });
-                            continue
+                            continue;
                         }
                         Err(e) => {
                             log::error!("failed to register stream: {e:?}");
@@ -113,14 +129,12 @@ impl ClientRegistryDriver {
                         }
                     }
                 }
-                Poll::Pending => {
-                    Poll::Pending
-                }
+                Poll::Pending => Poll::Pending,
                 Poll::Ready(None) => {
                     log::debug!("registry was dropped");
                     Poll::Ready(())
                 }
-            }
+            };
         }
     }
 
@@ -178,10 +192,10 @@ impl Future for ClientRegistryDriver {
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if let Poll::Ready(early_out) = self.poll_new_connections(context) {
-            return Poll::Ready(early_out)
+            return Poll::Ready(early_out);
         }
         if let Poll::Ready(early_out) = self.poll_mio(context) {
-            return Poll::Ready(early_out)
+            return Poll::Ready(early_out);
         }
         Poll::Pending
     }
@@ -198,11 +212,14 @@ impl<Bindings: ConnectionBindings> ConnectionDriver<Bindings> {
             break match self.network_readiness.poll_recv(context) {
                 Poll::Ready(Some(event)) => {
                     self.connection.handle_connection_event(event);
-                    continue
+                    continue;
                 }
-                Poll::Ready(None) => Poll::Ready(()),
+                Poll::Ready(None) => {
+                    log::debug!("dropping connection: network readiness sender dropped");
+                    Poll::Ready(())
+                }
                 Poll::Pending => Poll::Pending,
-            }
+            };
         }
     }
 }
@@ -212,16 +229,17 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if let Poll::Ready(early_out) = self.poll_network_status(context) {
-            return Poll::Ready(early_out)
+            return Poll::Ready(early_out);
         }
 
         if let Poll::Ready(early_out) = self.connection.poll_serialize_oubound(context) {
-            return Poll::Ready(early_out)
+            log::debug!("dropping connection: outbound channel failure");
+            return Poll::Ready(early_out);
         }
 
         if let Err(e) = self.connection.poll_write_buffers() {
-            log::warn!("dropping connection: {e:?}");
-            return Poll::Ready(())
+            log::warn!("dropping connection: write failed {e:?}");
+            return Poll::Ready(());
         }
 
         match self.connection.poll_read_inbound(context) {
@@ -230,16 +248,16 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
             }
             Ok(true) => {
                 if self.connection.has_work_in_flight() {
-                    log::trace!("remote closed connection but work is in flight");
-                    return Poll::Ready(())
+                    log::debug!("read closed connection but work is in flight");
+                    return Poll::Ready(());
                 } else {
-                    log::debug!("remote closed connection");
-                    return Poll::Ready(())
+                    log::debug!("read closed connection");
+                    return Poll::Ready(());
                 }
             }
             Err(e) => {
                 log::warn!("dropping connection after read: {e:?}");
-                return Poll::Ready(())
+                return Poll::Ready(());
             }
         }
 

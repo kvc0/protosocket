@@ -14,10 +14,10 @@ where
 {
     type Message = Response;
 
-    fn encode(&mut self, response: Self::Message, buffer: &mut impl bytes::BufMut) {
-        match response.encode_length_delimited(buffer) {
+    fn encode(&mut self, message: Self::Message, buffer: &mut impl bytes::BufMut) {
+        match message.encode_length_delimited(buffer) {
             Ok(_) => {
-                log::trace!("encoded reply");
+                log::trace!("encoded reply {message:?}");
             }
             Err(e) => {
                 log::error!("encoding error: {e:?}");
@@ -34,24 +34,17 @@ where
 
     fn decode(
         &mut self,
-        buffer: impl bytes::Buf,
+        mut buffer: impl bytes::Buf,
     ) -> std::result::Result<(usize, Self::Message), DeserializeError> {
-        match prost::decode_length_delimiter(buffer.chunk()) {
-            Ok(length) => {
-                log::trace!("reading {length} bytes from buffer");
-                match <Self::Message as prost::Message>::decode_length_delimited(buffer) {
-                    Ok(message) => {
-                        log::trace!("decoded request");
-                        Ok((0, message))
-                    }
-                    Err(e) => {
-                        log::debug!("could not decode message: {e:?}");
-                        Err(DeserializeError::InvalidBuffer)
-                    }
-                }
+        let start = buffer.remaining();
+        match <Self::Message as prost::Message>::decode_length_delimited(&mut buffer) {
+            Ok(message) => {
+                let length = start - buffer.remaining();
+                log::trace!("decoded request {length}: {message:?}");
+                Ok((length, message))
             }
             Err(e) => {
-                log::debug!("could not decode message length: {e:?}");
+                log::warn!("could not decode message: {e:?}");
                 Err(DeserializeError::InvalidBuffer)
             }
         }

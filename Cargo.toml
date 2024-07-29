@@ -4,7 +4,6 @@ resolver = "2"
 members = [
     "example-proto",
     "example-telnet",
-    "protosocket-client",
     "protosocket-connection",
     "protosocket-prost",
     "protosocket-server",

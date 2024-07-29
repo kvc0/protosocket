@@ -438,19 +438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protosocket-client"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures",
- "log",
- "mio",
- "protosocket-connection",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "protosocket-connection"
 version = "0.1.0"
 dependencies = [

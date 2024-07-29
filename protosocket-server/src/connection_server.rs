@@ -3,6 +3,9 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::pin;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use std::time::Duration;
 
 use mio::net::TcpListener;
@@ -20,10 +23,19 @@ use crate::connection_acceptor::NewConnection;
 
 pub trait ServerConnector: Unpin {
     type Bindings: ConnectionBindings;
-    
+
     fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer;
     fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer;
-    fn take_new_connection(&self, address: SocketAddr, outbound: mpsc::Sender<<<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message>, inbound: mpsc::Receiver<<<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message>);
+    fn take_new_connection(
+        &self,
+        address: SocketAddr,
+        outbound: mpsc::Sender<
+            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
+        >,
+        inbound: mpsc::Receiver<
+            <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
+        >,
+    );
 }
 
 /// Once you've configured your connection server the way you want it, execute it on your asynchronous runtime.
@@ -31,15 +43,11 @@ pub struct ConnectionServer<Connector: ServerConnector> {
     new_streams: mpsc::UnboundedReceiver<NewConnection>,
     connection_token_count: usize,
     connections: HashMap<Token, Connection<Connector::Bindings>>,
-    mio_io: Option<Mio>,
+    poll: mio::Poll,
+    events: mio::Events,
     server_state: Connector,
     /// used to let the server settle into waiting for readiness
     poll_backoff: Duration,
-}
-
-struct Mio {
-    poll: mio::Poll,
-    events: mio::Events,
 }
 
 impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connector> {
@@ -55,14 +63,9 @@ impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connec
             return std::task::Poll::Ready(early_out);
         }
 
-        let Mio {
-            mut poll,
-            mut events,
-        } = self.mio_io.take().expect("state must have mio");
-        if let std::task::Poll::Ready(early_out) = self.poll_mio(context, &mut poll, &mut events) {
+        if let std::task::Poll::Ready(early_out) = self.poll_mio(context) {
             return std::task::Poll::Ready(early_out);
         }
-        self.mio_io = Mio { poll, events }.into();
 
         self.poll_connections(context);
 
@@ -70,29 +73,25 @@ impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connec
     }
 }
 
-impl<Connector: ServerConnector> ConnectionServer<Connector>
-{
+impl<Connector: ServerConnector> ConnectionServer<Connector> {
     pub(crate) fn new(
         server_state: Connector,
         listener: TcpListener,
-    ) -> (ConnectionAcceptor, Self) {
+    ) -> crate::Result<(ConnectionAcceptor, Self)> {
         let (inbound_streams, new_streams) = mpsc::unbounded_channel();
 
-        (
+        Ok((
             ConnectionAcceptor::new(listener, inbound_streams),
             Self {
                 new_streams,
                 connection_token_count: 0,
                 connections: Default::default(),
-                mio_io: Mio {
-                    poll: mio::Poll::new().expect("must be able to create a poll"),
-                    events: mio::Events::with_capacity(1024),
-                }
-                .into(),
+                poll: mio::Poll::new()?,
+                events: mio::Events::with_capacity(1024),
                 server_state,
                 poll_backoff: Duration::from_millis(200),
             },
-        )
+        ))
     }
 
     fn poll_register_new_connections(
@@ -105,25 +104,23 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
                     let token = Token(self.connection_token_count);
                     self.connection_token_count += 1;
 
-                    if let Err(e) = self
-                        .mio_io
-                        .as_mut()
-                        .expect("must have mio")
-                        .poll
-                        .registry()
-                        .register(
-                            &mut new_connection.stream,
-                            token,
-                            Interest::READABLE.add(Interest::WRITABLE),
-                        )
-                    {
+                    if let Err(e) = self.poll.registry().register(
+                        &mut new_connection.stream,
+                        token,
+                        Interest::READABLE.add(Interest::WRITABLE),
+                    ) {
                         log::error!("failed to register stream: {e:?}");
                         std::task::Poll::Ready(())
                     } else {
                         let serializer = self.server_state.serializer();
                         let deserializer = self.server_state.deserializer();
-                        let (outbound, inbound, connection) = Connection::new(new_connection.stream, deserializer, serializer);
-                        self.server_state.take_new_connection(new_connection.address, outbound, inbound);
+                        let (outbound, inbound, connection) =
+                            Connection::new(new_connection.stream, deserializer, serializer);
+                        self.server_state.take_new_connection(
+                            new_connection.address,
+                            outbound,
+                            inbound,
+                        );
 
                         self.connections.insert(token, connection);
                         continue;
@@ -139,7 +136,7 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
     }
 
     fn increase_poll_rate(&mut self) {
-        self.poll_backoff = max(Duration::from_micros(1), self.poll_backoff / 2);
+        self.poll_backoff = max(Duration::from_micros(1), self.poll_backoff / 4);
     }
 
     fn decrease_poll_rate(&mut self) {
@@ -152,23 +149,21 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
     fn poll_mio(
         &mut self,
         context: &mut std::task::Context<'_>,
-        poll: &mut mio::Poll,
-        events: &mut mio::Events,
     ) -> std::task::Poll<<Self as std::future::Future>::Output> {
         // FIXME: schedule this task to wake up again in a smarter way. This just makes sure events aren't missed.....
         context.waker().wake_by_ref();
-        if let Err(e) = poll.poll(events, Some(self.poll_backoff)) {
+        if let Err(e) = self.poll.poll(&mut self.events, Some(self.poll_backoff)) {
             log::error!("failed to poll connections: {e:?}");
             return std::task::Poll::Ready(());
         }
 
-        if events.is_empty() {
+        if self.events.is_empty() {
             self.decrease_poll_rate()
         } else {
             self.increase_poll_rate()
         }
 
-        for event in events.iter() {
+        for event in self.events.iter() {
             let token = event.token();
             let event: NetworkStatusEvent = match event.try_into() {
                 Ok(e) => e,
@@ -182,10 +177,10 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
                 );
             }
         }
-        std::task::Poll::Pending
+        Poll::Pending
     }
 
-    fn poll_connections(mut self: std::pin::Pin<&mut Self>, context: &mut std::task::Context) {
+    fn poll_connections(mut self: Pin<&mut Self>, context: &mut Context) {
         let mut drop_connections = Vec::new();
         for (token, connection) in self.connections.iter_mut() {
             match connection.poll_read_inbound(context) {
@@ -194,10 +189,10 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
                 }
                 Ok(true) => {
                     if connection.has_work_in_flight() {
-                        log::trace!("remote closed connection but work is in flight");
+                        log::debug!("connection read is closed but work is in flight");
                         drop_connections.push(*token);
                     } else {
-                        log::trace!("remote closed connection");
+                        log::debug!("connection read is closed");
                         drop_connections.push(*token);
                     }
                 }
@@ -207,23 +202,21 @@ impl<Connector: ServerConnector> ConnectionServer<Connector>
                 }
             }
 
-            connection.poll_serialize_oubound(context);
+            if let Poll::Ready(_early_out) = connection.poll_serialize_oubound(context) {
+                log::warn!("dropping connection for outbound serialization failure");
+                drop_connections.push(*token);
+                continue;
+            }
 
             if let Err(e) = connection.poll_write_buffers() {
-                log::warn!("dropping connection: {e:?}");
+                log::warn!("dropping connection for write buffer failure: {e:?}");
                 drop_connections.push(*token);
                 continue;
             }
         }
         for connection in drop_connections {
             if let Some(connection) = self.connections.remove(&connection) {
-                connection.deregister(
-                    self.mio_io
-                        .as_mut()
-                        .expect("mio must exist")
-                        .poll
-                        .registry(),
-                );
+                connection.deregister(self.poll.registry());
             }
         }
     }
