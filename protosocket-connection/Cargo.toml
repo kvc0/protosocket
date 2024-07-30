@@ -1,14 +1,14 @@
 [package]
 name = "protosocket"
-version = "0.1.0"
-edition = "2021"
 description = "Message-oriented nonblocking tcp stream"
-license = "Apache-2.0"
-authors = ["kvc0"]
-readme = "../README.md"
-repository = "https://github.com/kvc0/protosocket"
-keywords = ["tcp", "protobuf", "service", "performance"]
-categories = ["web-programming"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+readme.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 bytes                   = { workspace = true }

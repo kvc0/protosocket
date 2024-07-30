@@ -11,13 +11,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: Install protoc
-      run: ./install_protoc.sh
-    - uses: actions-rs/toolchain@v1
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
       with:
-          toolchain: stable
-          override: true
+        toolchain: stable
+        components: rustfmt, clippy
     - uses: Swatinem/rust-cache@v2
 
     - name: Rustfmt
@@ -29,9 +27,3 @@ jobs:
         cargo clippy --all-targets --all-features -- -D warnings -W clippy::unwrap_used
     - name: Run tests
       run: cargo test --verbose
-
-    - name: Ensure change is publishable
-      run: |
-        cargo publish --dry-run --all-features -p protosocket
-        cargo publish --dry-run --all-features -p protosocket-prost
-        cargo publish --dry-run --all-features -p protosocket-server

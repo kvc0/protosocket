@@ -9,6 +9,18 @@ members = [
     "protosocket-server",
 ]
 
+[workspace.package]
+version = "0.1.0"
+authors = ["kvc0"]
+repository = "https://github.com/kvc0/protosocket"
+edition = "2021"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["tcp", "protobuf", "service", "performance"]
+categories = ["web-programming"]
+
+
+
 [workspace.dependencies]
 protosocket             = { path = "protosocket-connection" }
 protosocket-server      = { path = "protosocket-server" }
