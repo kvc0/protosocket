@@ -22,7 +22,7 @@ categories = ["web-programming"]
 
 
 [workspace.dependencies]
-protosocket             = { path = "protosocket-connection", version = "*" }
+protosocket             = { path = "protosocket-connection", version = "0" }
 protosocket-server      = { path = "protosocket-server" }
 protosocket-prost       = { path = "protosocket-prost" }
 
