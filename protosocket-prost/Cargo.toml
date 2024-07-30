@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-protosocket             = { workspace = true, version = "0.0.1" }
+protosocket             = { workspace = true, version = "*" }
 
 bytes                   = { workspace = true }
 log                     = { workspace = true }
