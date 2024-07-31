@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::{
+    net::TcpListener,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use messages::{EchoResponse, Request, Response};
@@ -16,8 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::new()?;
     let server_context = ServerContext::default();
 
-    let port_nine_thousand = server
-        .register_service_listener::<ServerContext>("127.0.0.1:9000", server_context.clone())?;
+    let listener = TcpListener::bind("127.0.0.1:9000")?;
+    listener.set_nonblocking(true)?;
+    let port_nine_thousand =
+        server.register_service_listener::<ServerContext>(listener, server_context.clone())?;
 
     std::thread::spawn(move || server.serve().expect("server must serve"));
 

@@ -24,17 +24,16 @@ impl Server {
         })
     }
 
-    /// address like "127.0.0.1:9000"
+    /// listener must be configured non_blocking
     pub fn register_service_listener<Connector: ServerConnector>(
         &mut self,
-        address: impl Into<String>,
+        listener: std::net::TcpListener,
         server_state: Connector,
     ) -> Result<ConnectionServer<Connector>> {
-        let addr = address.into().parse()?;
         let token = Token(self.services.len());
-        log::trace!("new service listener index {} on {addr:?}", token.0);
-        let mut listener = TcpListener::bind(addr)?;
+        log::trace!("new service listener index {} on {listener:?}", token.0);
 
+        let mut listener = TcpListener::from_std(listener);
         self.poll.registry().register(
             &mut listener,
             token,
