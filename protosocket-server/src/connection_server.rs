@@ -8,7 +8,6 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use mio::net::TcpListener;
 use mio::Interest;
 use mio::Token;
 use protosocket::Connection;
@@ -18,7 +17,6 @@ use protosocket::NetworkStatusEvent;
 use protosocket::Serializer;
 use tokio::sync::mpsc;
 
-use crate::connection_acceptor::ConnectionAcceptor;
 use crate::connection_acceptor::NewConnection;
 
 pub trait ServerConnector: Unpin {
@@ -38,7 +36,18 @@ pub trait ServerConnector: Unpin {
     );
 }
 
-/// Once you've configured your connection server the way you want it, execute it on your asynchronous runtime.
+/// A ConnectionServer is an IO driver. It directly uses mio to poll the OS's io primitives,
+/// manages read and write buffers, and vends messages to & from connections.
+/// Connections interact with the ConnectionServer through mpsc channels.
+///
+/// Protosockets are monomorphic messages - you can only have 1 kind of message per service.
+/// The expected way to work with this is to use prost and protocol buffers to encode messages.
+///
+/// Protosocket messages are not opinionated about request & reply. If you are, you will need
+/// to implement such a thing. This allows you freely choose whether you want to send
+/// fire-&-forget messages sometimes; however it requires you to write your protocol's rules.
+/// You get an inbound stream of <MessageIn> and an outbound stream of <MessageOut> per
+/// connection - you decide what those streams mean for you!
 pub struct ConnectionServer<Connector: ServerConnector> {
     new_streams: mpsc::UnboundedReceiver<NewConnection>,
     connection_token_count: usize,
@@ -76,22 +85,17 @@ impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connec
 impl<Connector: ServerConnector> ConnectionServer<Connector> {
     pub(crate) fn new(
         server_state: Connector,
-        listener: TcpListener,
-    ) -> crate::Result<(ConnectionAcceptor, Self)> {
-        let (inbound_streams, new_streams) = mpsc::unbounded_channel();
-
-        Ok((
-            ConnectionAcceptor::new(listener, inbound_streams),
-            Self {
-                new_streams,
-                connection_token_count: 0,
-                connections: Default::default(),
-                poll: mio::Poll::new()?,
-                events: mio::Events::with_capacity(1024),
-                server_state,
-                poll_backoff: Duration::from_millis(200),
-            },
-        ))
+        new_streams: mpsc::UnboundedReceiver<NewConnection>,
+    ) -> crate::Result<Self> {
+        Ok(Self {
+            new_streams,
+            connection_token_count: 0,
+            connections: Default::default(),
+            poll: mio::Poll::new()?,
+            events: mio::Events::with_capacity(1024),
+            server_state,
+            poll_backoff: Duration::from_millis(200),
+        })
     }
 
     fn poll_register_new_connections(

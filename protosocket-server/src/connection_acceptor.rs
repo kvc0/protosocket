@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicUsize;
+
 use mio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -11,18 +13,29 @@ pub(crate) struct NewConnection {
 
 pub(crate) struct ConnectionAcceptor {
     listener: TcpListener,
-    inbound_streams: mpsc::UnboundedSender<NewConnection>,
+    inbound_streams: Vec<mpsc::UnboundedSender<NewConnection>>,
+    clock: AtomicUsize,
 }
 
 impl ConnectionAcceptor {
     pub fn new(
         listener: TcpListener,
-        inbound_streams: mpsc::UnboundedSender<NewConnection>,
-    ) -> Self {
-        Self {
-            listener,
-            inbound_streams,
-        }
+        thread_count: usize,
+    ) -> (Self, Vec<mpsc::UnboundedReceiver<NewConnection>>) {
+        let (inbound_streams, new_streams): (
+            Vec<mpsc::UnboundedSender<NewConnection>>,
+            Vec<mpsc::UnboundedReceiver<NewConnection>>,
+        ) = (0..thread_count)
+            .map(|_| mpsc::unbounded_channel())
+            .collect();
+        (
+            Self {
+                listener,
+                inbound_streams,
+                clock: Default::default(),
+            },
+            new_streams,
+        )
     }
 
     pub fn accept(&self) -> crate::Result<()> {
@@ -41,8 +54,12 @@ impl ConnectionAcceptor {
         if let Err(e) = connection.stream.set_nodelay(true) {
             log::warn!("could not set nodelay: {e:?}");
         }
-        log::debug!("accepted connection {connection:?}");
-        self.inbound_streams
+        let round_robin_connection_thread_assignment = self
+            .clock
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.inbound_streams.len();
+        log::debug!("submitting connection to delegated connection server for accept {round_robin_connection_thread_assignment} -> {connection:?}");
+        self.inbound_streams[round_robin_connection_thread_assignment]
             .send(connection)
             .map_err(|_e| Error::Dead("connection server"))
     }
