@@ -19,6 +19,7 @@ use crate::{ConnectionDriver, Error, ProstClientConnectionBindings, ProstSeriali
 /// You can use different kinds of clients with a single registry. The registry generates network status
 /// events for connections - readable & writable. Connections themselves service the events and invoke
 /// read/writev.
+#[derive(Debug, Clone)]
 pub struct ClientRegistry {
     new_clients: mpsc::UnboundedSender<RegisterClient>,
     max_message_length: usize,
