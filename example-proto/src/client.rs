@@ -31,7 +31,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let response_count = Arc::new(AtomicUsize::new(0));
 
-    for _i in 0..1 {
+    for _i in 0..64 {
         let (outbound, inbound, connection_driver) = registry
             .register_client::<Request, Response>("127.0.0.1:9000")
             .await?;
