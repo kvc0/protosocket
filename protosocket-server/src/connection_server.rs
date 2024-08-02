@@ -99,7 +99,7 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
             new_streams,
             connection_token_count: 0,
             connections: Default::default(),
-            poll: mio::Poll::new()?,
+            poll: mio::Poll::new().map_err(std::sync::Arc::new)?,
             events: mio::Events::with_capacity(1024),
             server_state,
             poll_backoff: Duration::from_millis(200),

@@ -48,7 +48,7 @@ impl ConnectionAcceptor {
             Err(e) => {
                 // If it was any other kind of error, something went
                 // wrong and we terminate with an error.
-                return Err(e.into());
+                return Err(std::sync::Arc::new(e).into());
             }
         };
         if let Err(e) = connection.stream.set_nodelay(true) {

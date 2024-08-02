@@ -63,7 +63,7 @@ impl ClientRegistry {
         Response: prost::Message + Default + Unpin,
     {
         let address = address.into().parse()?;
-        let stream = TcpStream::connect(address)?;
+        let stream = TcpStream::connect(address).map_err(std::sync::Arc::new)?;
 
         let (completion, registration) = oneshot::channel();
         self.new_clients
@@ -112,7 +112,7 @@ pub struct ClientRegistryDriver {
 
 impl ClientRegistryDriver {
     fn new(new_clients: mpsc::UnboundedReceiver<RegisterClient>) -> crate::Result<Self> {
-        let poll = mio::Poll::new()?;
+        let poll = mio::Poll::new().map_err(std::sync::Arc::new)?;
         let events = mio::Events::with_capacity(1024);
         Ok(Self {
             new_clients,
@@ -139,7 +139,8 @@ impl ClientRegistryDriver {
                     .build()
                     .expect("io thread can have a runtime");
                 runtime.block_on(self);
-            })?;
+            })
+            .map_err(std::sync::Arc::new)?;
 
         Ok(io)
     }

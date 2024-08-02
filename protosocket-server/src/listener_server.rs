@@ -15,7 +15,7 @@ pub struct Server {
 
 impl Server {
     pub fn new() -> Result<Self> {
-        let poll = Poll::new()?;
+        let poll = Poll::new().map_err(std::sync::Arc::new)?;
         let events = Events::with_capacity(1024);
         log::trace!("new server");
 
@@ -77,11 +77,14 @@ impl Server {
         log::trace!("new service listener index {} on {listener:?}", token.0);
 
         let mut listener = TcpListener::from_std(listener);
-        self.poll.registry().register(
-            &mut listener,
-            token,
-            Interest::READABLE.add(Interest::WRITABLE),
-        )?;
+        self.poll
+            .registry()
+            .register(
+                &mut listener,
+                token,
+                Interest::READABLE.add(Interest::WRITABLE),
+            )
+            .map_err(std::sync::Arc::new)?;
 
         let (acceptor, inbound_streams) = ConnectionAcceptor::new(listener, thread_count);
         self.services.push(acceptor);
@@ -103,7 +106,7 @@ impl Server {
                     continue;
                 }
                 log::error!("failed {e:?}");
-                return Err(e.into());
+                return Err(std::sync::Arc::new(e).into());
             }
 
             for event in events.iter() {
