@@ -1,5 +1,4 @@
 use std::{
-    cmp::min,
     collections::VecDeque,
     io::{IoSlice, Read, Write},
     task::{Context, Poll},
@@ -21,19 +20,49 @@ pub struct Connection<Bindings: ConnectionBindings> {
     inbound_messages: PollSender<<Bindings::Deserializer as Deserializer>::Message>,
     serializer_buffers: Vec<Vec<u8>>,
     send_buffer: VecDeque<Vec<u8>>,
-    receive_buffer_length: usize,
+    receive_buffer_slice_end: usize,
+    receive_buffer_start_offset: usize,
     receive_buffer: Vec<u8>,
+    receive_buffer_swap: Vec<u8>,
+    max_message_length: usize,
+    max_queued_send_messages: usize,
     deserializer: Bindings::Deserializer,
     serializer: Bindings::Serializer,
     readable: ReadState,
     writable: bool,
 }
 
-#[derive(Debug)]
+impl<Bindings: ConnectionBindings> std::fmt::Display for Connection<Bindings> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let read_state = self.readable;
+        let read_start = self.receive_buffer_start_offset;
+        let read_end = self.receive_buffer_slice_end;
+        let write_state = self.writable;
+        let write_queue = self.send_buffer.len();
+        let write_length: usize = self.send_buffer.iter().map(|b| b.len()).sum();
+        write!(f, "Connection: {{read{{state: {read_state}, start: {read_start}, end: {read_end}}}, write{{writable: {write_state}, queue: {write_queue}, length: {write_length}}}}}")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReadState {
     NotReadable,
     Readable,
     Closed,
+}
+
+impl std::fmt::Display for ReadState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                ReadState::NotReadable => "not_readable",
+                ReadState::Readable => "readable",
+                ReadState::Closed => "closed",
+            }
+        )
+    }
 }
 
 impl<Lifecycle: ConnectionBindings> Drop for Connection<Lifecycle> {
@@ -71,13 +100,15 @@ where
         stream: TcpStream,
         deserializer: Bindings::Deserializer,
         serializer: Bindings::Serializer,
+        max_message_length: usize,
+        max_queued_send_messages: usize,
     ) -> (
         mpsc::Sender<<Bindings::Serializer as Serializer>::Message>,
         mpsc::Receiver<<Bindings::Deserializer as Deserializer>::Message>,
         Self,
     ) {
-        let (outbound_sender, outbound_receiver) = mpsc::channel(128);
-        let (inbound_sender, inbound_receiver) = mpsc::channel(128);
+        let (outbound_sender, outbound_receiver) = mpsc::channel(256);
+        let (inbound_sender, inbound_receiver) = mpsc::channel(256);
         (
             outbound_sender,
             inbound_receiver,
@@ -88,7 +119,11 @@ where
                 send_buffer: Default::default(),
                 serializer_buffers: Vec::from_iter((0..1).map(|_| Vec::new())),
                 receive_buffer: Vec::new(),
-                receive_buffer_length: 0,
+                receive_buffer_swap: Vec::new(),
+                max_message_length,
+                receive_buffer_start_offset: 0,
+                max_queued_send_messages,
+                receive_buffer_slice_end: 0,
                 deserializer,
                 serializer,
                 readable: ReadState::NotReadable,
@@ -129,7 +164,7 @@ where
 
     /// true when the connection has stuff to do. This can return true when the inbound half of the connection is closed (e.g., nc)
     pub fn has_work_in_flight(&self) -> bool {
-        !(self.send_buffer.is_empty() && self.receive_buffer_length == 0)
+        !(self.send_buffer.is_empty() && self.receive_buffer_slice_end == 0)
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
@@ -137,10 +172,7 @@ where
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub fn poll_read_inbound(
-        &mut self,
-        context: &mut Context<'_>,
-    ) -> std::result::Result<bool, std::io::Error> {
+    pub fn poll_read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
         match self.readable {
             ReadState::NotReadable => return Ok(false),
             ReadState::Closed => return Ok(true),
@@ -149,80 +181,131 @@ where
             }
         }
 
-        const BUFFER_INCREMENT: usize = 16 * (2 << 10);
-        if self.receive_buffer.len() - self.receive_buffer_length < BUFFER_INCREMENT {
-            self.receive_buffer.resize(
-                (self.receive_buffer.len() / 4).clamp(BUFFER_INCREMENT, 2 << 20),
-                0,
-            );
-        }
-
-        // We can (maybe) read from the connection.
-        match self
-            .stream
-            .read(&mut self.receive_buffer[self.receive_buffer_length..])
-        {
-            Ok(0) => {
-                log::debug!("connection was shut down as recv returned 0");
-                self.readable = ReadState::Closed;
-                return Ok(true);
+        if self.receive_buffer_slice_end == self.max_message_length {
+            log::trace!("receive buffer is full");
+        } else {
+            const BUFFER_INCREMENT: usize = 16 * (2 << 10);
+            if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
+                self.receive_buffer.resize(
+                    (self.receive_buffer.len() + BUFFER_INCREMENT).min(self.max_message_length),
+                    0,
+                );
             }
-            Ok(bytes_read) => {
-                self.receive_buffer_length += bytes_read;
 
-                let mut consumed = 0;
+            if 0 < self.receive_buffer.len() - self.receive_buffer_slice_end {
+                // We can (maybe) read from the connection.
+                if let Some(early_out) = self.read_from_stream() {
+                    return early_out;
+                }
+            } else {
+                log::debug!("receive is full {self}");
+            }
+        }
+        Ok(false)
+    }
 
-                while consumed < self.receive_buffer_length {
-                    match self.inbound_messages.poll_reserve(context) {
-                        std::task::Poll::Ready(Ok(_)) => {
-                            // ready
-                        }
-                        std::task::Poll::Ready(Err(_e)) => {
-                            log::debug!("inbound channel closed - closing connection");
+    pub fn dispatch_messages_from_read_queue(
+        &mut self,
+        context: &mut Context,
+    ) -> Result<bool, std::io::Error> {
+        while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
+            match self.inbound_messages.poll_reserve(context) {
+                std::task::Poll::Ready(Ok(_)) => {
+                    // ready
+                }
+                std::task::Poll::Ready(Err(_e)) => {
+                    log::info!("inbound channel closed - closing connection");
+                    self.readable = ReadState::Closed;
+                    return Ok(true);
+                }
+                std::task::Poll::Pending => {
+                    // can't accept any more inbound messages right now
+                    log::debug!("inbound message queue is draining too slowly");
+                    break;
+                }
+            }
+
+            let buffer = &self.receive_buffer
+                [self.receive_buffer_start_offset..self.receive_buffer_slice_end];
+            match self.deserializer.decode(buffer) {
+                Ok((length, message)) => {
+                    self.receive_buffer_start_offset += length;
+                    if let Err(_e) = self.inbound_messages.send_item(message) {
+                        log::warn!("failure to send to inbound channel after reserving space - closing channel");
+                        self.readable = ReadState::Closed;
+                        return Ok(true);
+                    }
+                }
+                Err(e) => match e {
+                    DeserializeError::IncompleteBuffer { next_message_size } => {
+                        if self.max_message_length < next_message_size {
+                            log::error!("tried to receive message that is too long. Resetting connection - max: {}, requested: {}", self.max_message_length, next_message_size);
                             self.readable = ReadState::Closed;
                             return Ok(true);
                         }
-                        std::task::Poll::Pending => {
-                            // can't accept any more inbound messages right now
+                        if self.max_message_length
+                            < self.receive_buffer_slice_end + next_message_size
+                        {
+                            let length =
+                                self.receive_buffer_slice_end - self.receive_buffer_start_offset;
+                            log::info!(
+                                "rotating {}b of buffer to make room for next message {}b",
+                                length,
+                                next_message_size
+                            );
+                            self.receive_buffer_swap.clear();
+                            self.receive_buffer_swap.extend_from_slice(
+                                &self.receive_buffer[self.receive_buffer_start_offset
+                                    ..self.receive_buffer_slice_end],
+                            );
+                            std::mem::swap(&mut self.receive_buffer, &mut self.receive_buffer_swap);
+                            self.receive_buffer_start_offset = 0;
+                            self.receive_buffer_slice_end = length;
+                        }
+                        log::debug!("waiting for the next message of length {next_message_size}");
+                        break;
+                    }
+                    DeserializeError::InvalidBuffer => {
+                        log::error!("message was invalid - broken stream");
+                        self.readable = ReadState::Closed;
+                        return Ok(true);
+                    }
+                    DeserializeError::SkipMessage { distance } => {
+                        if distance
+                            < self.receive_buffer_slice_end - self.receive_buffer_start_offset
+                        {
+                            log::trace!("cannot skip yet, need to read more");
                             break;
                         }
+                        log::debug!("skipping message of length {distance}");
+                        self.receive_buffer_start_offset += distance;
                     }
+                },
+            }
+        }
+        if self.receive_buffer_start_offset == self.receive_buffer_slice_end {
+            log::debug!("read buffer complete - resetting");
+            self.receive_buffer_start_offset = 0;
+            self.receive_buffer_slice_end = 0;
+        }
+        Ok(false)
+    }
 
-                    let buffer = &self.receive_buffer[consumed..self.receive_buffer_length];
-                    match self.deserializer.decode(buffer) {
-                        Ok((length, message)) => {
-                            consumed += length;
-                            if let Err(_e) = self.inbound_messages.send_item(message) {
-                                log::warn!("failure to send to inbound channel after reserving space - closing channel");
-                                self.readable = ReadState::Closed;
-                                return Ok(true);
-                            }
-                        }
-                        Err(e) => {
-                            match e {
-                                DeserializeError::IncompleteBuffer { next_message_size } => {
-                                    log::debug!("waiting for the next message of length {next_message_size}");
-                                    break;
-                                }
-                                DeserializeError::InvalidBuffer => {
-                                    log::debug!("message was invalid");
-                                    consumed = self.receive_buffer_length;
-                                }
-                                DeserializeError::SkipMessage { distance } => {
-                                    log::debug!("skipping message of length {distance}");
-                                    consumed = min(self.receive_buffer_length, consumed + distance);
-                                }
-                            }
-                        }
-                    }
-                }
-                self.receive_buffer_length -= consumed;
-                if consumed != 0 && self.receive_buffer_length != 0 {
-                    // partial read - have to shift the buffer because I haven't made it smarter.
-                    // at least I'm pulling multiple messages out if there's a bunch of little messages in a big buffer...
-                    log::debug!("shifting buffer by {consumed} bytes");
-                    self.receive_buffer.rotate_left(consumed);
-                }
+    fn read_from_stream(&mut self) -> Option<Result<bool, std::io::Error>> {
+        match self
+            .stream
+            .read(&mut self.receive_buffer[self.receive_buffer_slice_end..])
+        {
+            Ok(0) => {
+                log::info!(
+                    "connection was shut down as recv returned 0. Requested {}",
+                    self.receive_buffer.len() - self.receive_buffer_slice_end
+                );
+                self.readable = ReadState::Closed;
+                return Some(Ok(true));
+            }
+            Ok(bytes_read) => {
+                self.receive_buffer_slice_end += bytes_read;
             }
             // Would block "errors" are the OS's way of saying that the
             // connection is not actually ready to perform this I/O operation.
@@ -235,25 +318,39 @@ where
             }
             // Other errors we'll consider fatal.
             Err(err) => {
-                log::debug!("error while reading from tcp stream: {err:?}");
-                return Err(err);
+                log::warn!("error while reading from tcp stream. buffer length: {}b, offset: {}, offered length {}b, err: {err:?}", self.receive_buffer.len(), self.receive_buffer_slice_end, self.receive_buffer.len() - self.receive_buffer_slice_end);
+                return Some(Err(err));
             }
         }
-        Ok(false)
+        None
     }
 
     /// This serializes work-in-progress messages and moves them over into the write queue
     pub fn poll_serialize_oubound(&mut self, context: &mut Context<'_>) -> Poll<()> {
-        let mut outbound = Vec::with_capacity(16);
+        let max_outbound = self.max_queued_send_messages - self.send_buffer.len();
+        if max_outbound == 0 {
+            log::debug!("send is full: {self}");
+            context.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        let mut outbound = Vec::with_capacity(max_outbound.min(32));
         match self
             .outbound_messages
-            .poll_recv_many(context, &mut outbound, 16)
+            .poll_recv_many(context, &mut outbound, max_outbound)
         {
             std::task::Poll::Ready(how_many) => {
                 log::trace!("polled {how_many} messages to send");
                 for message in outbound.drain(..) {
                     let mut buffer = self.serializer_buffers.pop().unwrap_or_default();
                     self.serializer.encode(message, &mut buffer);
+                    if self.max_message_length < buffer.len() {
+                        log::error!(
+                            "tried to send too large a message. Max {}, attempted: {}",
+                            self.max_message_length,
+                            buffer.len()
+                        );
+                        return Poll::Ready(());
+                    }
                     log::trace!(
                         "serialized message and enqueueing outbound buffer: {}b",
                         buffer.len()
@@ -270,9 +367,9 @@ where
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    pub fn poll_write_buffers(&mut self) -> std::result::Result<(), std::io::Error> {
+    pub fn poll_write_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
         if !self.writable || self.send_buffer.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
 
         /// I need to figure out how to get this from the os rather than hardcoding. 16 is the lowest I've seen mention of,
@@ -286,6 +383,10 @@ where
             .map(|v| IoSlice::new(v))
             .collect();
         match self.stream.write_vectored(&buffers) {
+            Ok(0) => {
+                log::info!("write stream was closed");
+                return Ok(true);
+            }
             Ok(written) => {
                 self.rotate_send_buffers(written);
             }
@@ -300,14 +401,20 @@ where
             }
             // other errors terminate the stream
             Err(err) => {
-                log::debug!("error while writing to tcp stream: {err:?}, buffers: {buffers:?}");
+                log::warn!(
+                    "error while writing to tcp stream: {err:?}, buffers: {}, {}b: {:?}",
+                    buffers.len(),
+                    buffers.iter().map(|b| b.len()).sum::<usize>(),
+                    buffers.into_iter().map(|b| b.len()).collect::<Vec<_>>()
+                );
                 return Err(err);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn rotate_send_buffers(&mut self, mut written: usize) {
+        let total_written = written;
         while 0 < written {
             if let Some(mut front) = self.send_buffer.pop_front() {
                 if front.len() <= written {
@@ -325,13 +432,13 @@ where
                 } else {
                     // Walk the buffer forward through a replacement. It will still amortize the allocation,
                     // but this is not optimal. It's relatively easier to manage though, and I'm a busy person.
-                    log::debug!("shifting serialized buffer by {written} bytes");
+                    log::debug!("after writing {total_written}b, shifting partially written buffer of {}b by {written}b", front.len());
                     let replacement = front[written..].to_vec();
                     self.send_buffer.push_front(replacement);
                     break;
                 }
             } else {
-                log::debug!("rotated buffers. {} remaining", self.send_buffer.len());
+                log::error!("rotated all buffers but {written} bytes unaccounted for");
                 break;
             }
         }

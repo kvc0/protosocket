@@ -56,12 +56,20 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
             return Poll::Ready(early_out);
         }
 
-        if let Err(e) = self.connection.poll_write_buffers() {
-            log::warn!("dropping connection: write failed {e:?}");
-            return Poll::Ready(());
+        match self.connection.poll_write_buffers() {
+            Ok(closed) => {
+                if closed {
+                    log::info!("write connection closed");
+                    return Poll::Ready(());
+                }
+            }
+            Err(e) => {
+                log::warn!("dropping connection: write failed {e:?}");
+                return Poll::Ready(());
+            }
         }
 
-        match self.connection.poll_read_inbound(context) {
+        match self.connection.poll_read_inbound() {
             Ok(false) => {
                 // log::trace!("checked inbound connection buffer");
             }
@@ -76,6 +84,25 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
             }
             Err(e) => {
                 log::warn!("dropping connection after read: {e:?}");
+                return Poll::Ready(());
+            }
+        }
+
+        match self.connection.dispatch_messages_from_read_queue(context) {
+            Ok(false) => {
+                // log::trace!("checked for messages to dispatch");
+            }
+            Ok(true) => {
+                if self.connection.has_work_in_flight() {
+                    log::debug!("connection read dispatch is closed but work is in flight");
+                    return Poll::Ready(());
+                } else {
+                    log::debug!("connection read dispatch is closed");
+                    return Poll::Ready(());
+                }
+            }
+            Err(e) => {
+                log::warn!("dropping connection after read dispatch: {e:?}");
                 return Poll::Ready(());
             }
         }

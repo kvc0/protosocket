@@ -34,6 +34,14 @@ pub trait ServerConnector: Unpin {
             <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
         >,
     );
+
+    fn maximum_message_length(&self) -> usize {
+        4 * (2 << 20)
+    }
+
+    fn max_queued_outbound_messages(&self) -> usize {
+        256
+    }
 }
 
 /// A ConnectionServer is an IO driver. It directly uses mio to poll the OS's io primitives,
@@ -118,8 +126,13 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
                     } else {
                         let serializer = self.server_state.serializer();
                         let deserializer = self.server_state.deserializer();
-                        let (outbound, inbound, connection) =
-                            Connection::new(new_connection.stream, deserializer, serializer);
+                        let (outbound, inbound, connection) = Connection::new(
+                            new_connection.stream,
+                            deserializer,
+                            serializer,
+                            self.server_state.maximum_message_length(),
+                            self.server_state.max_queued_outbound_messages(),
+                        );
                         self.server_state.take_new_connection(
                             new_connection.address,
                             outbound,
@@ -171,7 +184,10 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
             let token = event.token();
             let event: NetworkStatusEvent = match event.try_into() {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    log::debug!("received unknown event");
+                    continue;
+                }
             };
             if let Some(connection) = self.connections.get_mut(&token) {
                 connection.handle_connection_event(event);
@@ -187,7 +203,7 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
     fn poll_connections(mut self: Pin<&mut Self>, context: &mut Context) {
         let mut drop_connections = Vec::new();
         for (token, connection) in self.connections.iter_mut() {
-            match connection.poll_read_inbound(context) {
+            match connection.poll_read_inbound() {
                 Ok(false) => {
                     // log::trace!("checked inbound connection buffer");
                 }
@@ -202,6 +218,25 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
                 }
                 Err(e) => {
                     log::warn!("dropping connection after read: {e:?}");
+                    drop_connections.push(*token);
+                }
+            }
+
+            match connection.dispatch_messages_from_read_queue(context) {
+                Ok(false) => {
+                    // log::trace!("checked for messages to dispatch");
+                }
+                Ok(true) => {
+                    if connection.has_work_in_flight() {
+                        log::debug!("connection read dispatch is closed but work is in flight");
+                        drop_connections.push(*token);
+                    } else {
+                        log::debug!("connection read dispatch is closed");
+                        drop_connections.push(*token);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("dropping connection after read dispatch: {e:?}");
                     drop_connections.push(*token);
                 }
             }

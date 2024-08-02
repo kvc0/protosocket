@@ -3,39 +3,61 @@ use std::{
     sync::{atomic::AtomicUsize, Arc},
 };
 
-use futures::{stream::FuturesUnordered, StreamExt};
 use messages::{EchoResponse, Request, Response};
 use protosocket::{ConnectionBindings, Deserializer, Serializer};
 use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
 use protosocket_server::{Server, ServerConnector};
+use tokio::sync::Semaphore;
 
 mod messages;
 
 #[allow(clippy::expect_used)]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
+    static I: AtomicUsize = AtomicUsize::new(0);
+    let connection_runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name_fn(|| {
+            format!(
+                "conn-{}",
+                I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        })
+        .enable_all()
+        .build()?;
+
     let mut server = Server::new()?;
-    let server_context = ServerContext::default();
+    let server_context = ServerContext {
+        _connections: Default::default(),
+        connection_runtime: connection_runtime.handle().clone(),
+    };
 
     let listener = TcpListener::bind("127.0.0.1:9000")?;
     listener.set_nonblocking(true)?;
     let port_nine_thousand =
         server.register_service_listener::<ServerContext>(listener, server_context.clone())?;
 
-    std::thread::spawn(move || server.serve().expect("server must serve"));
+    let listener = std::thread::Builder::new()
+        .name("listener".to_string())
+        .spawn(move || server.serve().expect("server must serve"))?;
+    let io = std::thread::Builder::new()
+        .name("service-io".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("io thread can have a runtime");
+            runtime.block_on(port_nine_thousand)
+        })?;
 
-    tokio::spawn(port_nine_thousand)
-        .await
-        .expect("service must serve");
-
+    listener.join().expect("listener completes");
+    io.join().expect("io completes");
     Ok(())
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct ServerContext {
     _connections: Arc<AtomicUsize>,
+    connection_runtime: tokio::runtime::Handle,
 }
 
 impl ServerConnector for ServerContext {
@@ -59,27 +81,41 @@ impl ServerConnector for ServerContext {
             <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
         >,
     ) {
-        tokio::spawn(async move {
+        self.connection_runtime.spawn(async move {
             log::info!("new connection from {address:?}");
 
-            let mut concurrent_requests = FuturesUnordered::new();
+            let concurrent_requests = Arc::new(Semaphore::new(100));
 
-            while let Some(message) = inbound.recv().await {
-                let outbound = outbound.clone();
-                concurrent_requests.push(tokio::spawn(async move {
-                    if let Err(e) = outbound
-                        .send(Response {
-                            request_id: message.request_id,
-                            body: message.body.map(|b| EchoResponse { message: b.message }),
-                        })
-                        .await
-                    {
-                        log::error!("could not send response: {e:?}")
+            let mut buffer = Vec::new();
+            loop {
+                let count = inbound.recv_many(&mut buffer, 16).await;
+                if count == 0 {
+                    log::warn!("inbound closed");
+                    return;
+                }
+                for message in buffer.drain(..) {
+                    if let Ok(permit) = concurrent_requests.clone().acquire_owned().await {
+                        let outbound = outbound.clone();
+                        tokio::spawn(async move {
+                            let permit = permit;
+                            if let Err(e) = outbound
+                                .send(Response {
+                                    request_id: message.request_id,
+                                    body: message.body.map(|b| EchoResponse { message: b.message }),
+                                })
+                                .await
+                            {
+                                log::trace!("could not send response: {e:?}")
+                            }
+                            log::trace!(
+                                "permits at end of request handler: {}",
+                                permit.num_permits()
+                            );
+                        });
+                    } else {
+                        log::warn!("semaphore broken");
+                        return;
                     }
-                }));
-                while 99 < concurrent_requests.len() {
-                    log::trace!("concurrency limiter");
-                    concurrent_requests.next().await;
                 }
             }
         });

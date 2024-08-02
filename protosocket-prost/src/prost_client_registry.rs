@@ -3,7 +3,9 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
+    sync::atomic::AtomicUsize,
     task::{Context, Poll},
+    thread::JoinHandle,
     time::Duration,
 };
 
@@ -19,6 +21,8 @@ use crate::{ConnectionDriver, Error, ProstClientConnectionBindings, ProstSeriali
 /// read/writev.
 pub struct ClientRegistry {
     new_clients: mpsc::UnboundedSender<RegisterClient>,
+    max_message_length: usize,
+    max_queued_outbound_messages: usize,
 }
 
 impl ClientRegistry {
@@ -30,9 +34,19 @@ impl ClientRegistry {
         Ok((
             Self {
                 new_clients: sender,
+                max_message_length: 4 * (2 << 20),
+                max_queued_outbound_messages: 256,
             },
             ClientRegistryDriver::new(receiver)?,
         ))
+    }
+
+    pub fn set_max_message_length(&mut self, max_message_length: usize) {
+        self.max_message_length = max_message_length;
+    }
+
+    pub fn set_max_queued_outbound_messages(&mut self, max_queued_outbound_messages: usize) {
+        self.max_queued_outbound_messages = max_queued_outbound_messages;
     }
 
     /// Get a new connection to a protosocket server.
@@ -65,6 +79,8 @@ impl ClientRegistry {
                 stream,
                 ProstSerializer::default(),
                 ProstSerializer::default(),
+                self.max_message_length,
+                self.max_queued_outbound_messages,
             );
         let connection_driver = ConnectionDriver::new(connection, network_readiness);
         Ok((outbound, inbound, connection_driver))
@@ -81,8 +97,8 @@ struct RegisteredClient {
     network_readiness: mpsc::UnboundedReceiver<NetworkStatusEvent>,
 }
 
-/// You may choose to spawn this in your mixed runtime, but you should consider putting it on
-/// a dedicated thread. It uses epoll and though it tries to stay live, it can hitch for brief
+/// You may choose to spawn this in your mixed runtime, but you should strongly consider putting
+/// it on a dedicated thread. It uses epoll and though it tries to stay live, it can hitch for brief
 /// moments.
 pub struct ClientRegistryDriver {
     new_clients: mpsc::UnboundedReceiver<RegisterClient>,
@@ -106,6 +122,26 @@ impl ClientRegistryDriver {
             client_counter: 0,
             poll_backoff: Duration::from_millis(1),
         })
+    }
+
+    /// launch this client registry's IO on a background thread protoskt-{i}.
+    ///
+    /// Consider this as your default choice for a client registry.
+    pub fn handle_io_on_dedicated_thread(self) -> crate::Result<JoinHandle<()>> {
+        static I: AtomicUsize = AtomicUsize::new(0);
+        let io = std::thread::Builder::new()
+            .name(format!(
+                "protoskt-{}",
+                I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ))
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("io thread can have a runtime");
+                runtime.block_on(self);
+            })?;
+
+        Ok(io)
     }
 
     fn poll_new_connections(&mut self, context: &mut Context<'_>) -> Poll<()> {
