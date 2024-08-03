@@ -4,7 +4,7 @@ use std::{
 };
 
 use messages::{EchoResponse, Request, Response};
-use protosocket::{ConnectionBindings, Deserializer, Serializer};
+use protosocket::{ConnectionBindings, ConnectionDriver, Deserializer, Serializer};
 use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
 use protosocket_server::{Server, ServerConnector};
 use tokio::sync::Semaphore;
@@ -80,7 +80,9 @@ impl ServerConnector for ServerContext {
         mut inbound: tokio::sync::mpsc::Receiver<
             <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
         >,
+        connection_driver: ConnectionDriver<Self::Bindings>,
     ) {
+        self.connection_runtime.spawn(connection_driver);
         self.connection_runtime.spawn(async move {
             log::info!("new connection from {address:?}");
 

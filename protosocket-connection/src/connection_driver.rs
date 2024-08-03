@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use protosocket::{Connection, ConnectionBindings, NetworkStatusEvent};
+use crate::{Connection, ConnectionBindings, NetworkStatusEvent};
 use tokio::sync::mpsc;
 
 /// To be spawned, this is the task that handles serialization, deserialization, and network readiness events.
@@ -14,7 +14,7 @@ pub struct ConnectionDriver<Bindings: ConnectionBindings> {
 }
 
 impl<Bindings: ConnectionBindings> ConnectionDriver<Bindings> {
-    pub(crate) fn new(
+    pub fn new(
         connection: Connection<Bindings>,
         network_readiness: mpsc::UnboundedReceiver<NetworkStatusEvent>,
     ) -> Self {

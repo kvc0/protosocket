@@ -5,7 +5,9 @@ use std::{
     time::Duration,
 };
 
-use protosocket::{ConnectionBindings, DeserializeError, Deserializer, Serializer};
+use protosocket::{
+    ConnectionBindings, ConnectionDriver, DeserializeError, Deserializer, Serializer,
+};
 use protosocket_server::{Server, ServerConnector};
 
 #[allow(clippy::expect_used)]
@@ -53,7 +55,9 @@ impl ServerConnector for ServerContext {
         mut inbound: tokio::sync::mpsc::Receiver<
             <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
         >,
+        connection_driver: ConnectionDriver<Self::Bindings>,
     ) {
+        tokio::spawn(connection_driver);
         tokio::spawn(async move {
             log::info!("new connection from {address:?}");
             while let Some(mut message) = inbound.recv().await {

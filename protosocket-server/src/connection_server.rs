@@ -3,8 +3,6 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::pin;
-use std::pin::Pin;
-use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -12,6 +10,7 @@ use mio::Interest;
 use mio::Token;
 use protosocket::Connection;
 use protosocket::ConnectionBindings;
+use protosocket::ConnectionDriver;
 use protosocket::Deserializer;
 use protosocket::NetworkStatusEvent;
 use protosocket::Serializer;
@@ -33,6 +32,7 @@ pub trait ServerConnector: Unpin {
         inbound: mpsc::Receiver<
             <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
         >,
+        connection_driver: ConnectionDriver<Self::Bindings>,
     );
 
     fn maximum_message_length(&self) -> usize {
@@ -59,7 +59,7 @@ pub trait ServerConnector: Unpin {
 pub struct ConnectionServer<Connector: ServerConnector> {
     new_streams: mpsc::UnboundedReceiver<NewConnection>,
     connection_token_count: usize,
-    connections: HashMap<Token, Connection<Connector::Bindings>>,
+    connections_network_status: HashMap<Token, mpsc::UnboundedSender<NetworkStatusEvent>>,
     poll: mio::Poll,
     events: mio::Events,
     server_state: Connector,
@@ -84,8 +84,6 @@ impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connec
             return std::task::Poll::Ready(early_out);
         }
 
-        self.poll_connections(context);
-
         std::task::Poll::Pending
     }
 }
@@ -98,7 +96,7 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
         Ok(Self {
             new_streams,
             connection_token_count: 0,
-            connections: Default::default(),
+            connections_network_status: Default::default(),
             poll: mio::Poll::new().map_err(std::sync::Arc::new)?,
             events: mio::Events::with_capacity(1024),
             server_state,
@@ -126,20 +124,28 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
                     } else {
                         let serializer = self.server_state.serializer();
                         let deserializer = self.server_state.deserializer();
-                        let (outbound, inbound, connection) = Connection::new(
-                            new_connection.stream,
-                            deserializer,
-                            serializer,
-                            self.server_state.maximum_message_length(),
-                            self.server_state.max_queued_outbound_messages(),
-                        );
+                        let (outbound, inbound, connection) =
+                            Connection::<Connector::Bindings>::new(
+                                new_connection.stream,
+                                deserializer,
+                                serializer,
+                                self.server_state.maximum_message_length(),
+                                self.server_state.max_queued_outbound_messages(),
+                            );
+
+                        let (readiness_sender, network_readiness) = mpsc::unbounded_channel();
+                        let connection_driver =
+                            ConnectionDriver::new(connection, network_readiness);
+                        self.connections_network_status
+                            .insert(token, readiness_sender);
+
                         self.server_state.take_new_connection(
                             new_connection.address,
                             outbound,
                             inbound,
+                            connection_driver,
                         );
 
-                        self.connections.insert(token, connection);
                         continue;
                     }
                 }
@@ -189,8 +195,10 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
                     continue;
                 }
             };
-            if let Some(connection) = self.connections.get_mut(&token) {
-                connection.handle_connection_event(event);
+            if let Some(connection) = self.connections_network_status.get_mut(&token) {
+                if let Err(e) = connection.send(event) {
+                    log::debug!("client dropped: {e:?}");
+                }
             } else {
                 log::debug!(
                     "something happened for a socket that isn't connected anymore {event:?}"
@@ -198,65 +206,5 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
             }
         }
         Poll::Pending
-    }
-
-    fn poll_connections(mut self: Pin<&mut Self>, context: &mut Context) {
-        let mut drop_connections = Vec::new();
-        for (token, connection) in self.connections.iter_mut() {
-            match connection.poll_read_inbound() {
-                Ok(false) => {
-                    // log::trace!("checked inbound connection buffer");
-                }
-                Ok(true) => {
-                    if connection.has_work_in_flight() {
-                        log::debug!("connection read is closed but work is in flight");
-                        drop_connections.push(*token);
-                    } else {
-                        log::debug!("connection read is closed");
-                        drop_connections.push(*token);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("dropping connection after read: {e:?}");
-                    drop_connections.push(*token);
-                }
-            }
-
-            match connection.dispatch_messages_from_read_queue(context) {
-                Ok(false) => {
-                    // log::trace!("checked for messages to dispatch");
-                }
-                Ok(true) => {
-                    if connection.has_work_in_flight() {
-                        log::debug!("connection read dispatch is closed but work is in flight");
-                        drop_connections.push(*token);
-                    } else {
-                        log::debug!("connection read dispatch is closed");
-                        drop_connections.push(*token);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("dropping connection after read dispatch: {e:?}");
-                    drop_connections.push(*token);
-                }
-            }
-
-            if let Poll::Ready(_early_out) = connection.poll_serialize_oubound(context) {
-                log::warn!("dropping connection for outbound serialization failure");
-                drop_connections.push(*token);
-                continue;
-            }
-
-            if let Err(e) = connection.poll_write_buffers() {
-                log::warn!("dropping connection for write buffer failure: {e:?}");
-                drop_connections.push(*token);
-                continue;
-            }
-        }
-        for connection in drop_connections {
-            if let Some(connection) = self.connections.remove(&connection) {
-                connection.deregister(self.poll.registry());
-            }
-        }
     }
 }

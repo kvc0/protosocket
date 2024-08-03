@@ -271,10 +271,10 @@ where
                         return Ok(true);
                     }
                     DeserializeError::SkipMessage { distance } => {
-                        if distance
-                            < self.receive_buffer_slice_end - self.receive_buffer_start_offset
+                        if self.receive_buffer_slice_end - self.receive_buffer_start_offset
+                            < distance
                         {
-                            log::trace!("cannot skip yet, need to read more");
+                            log::trace!("cannot skip yet, need to read more. Skipping: {distance}, remaining:{}", self.receive_buffer_slice_end - self.receive_buffer_start_offset);
                             break;
                         }
                         log::debug!("skipping message of length {distance}");
@@ -420,7 +420,7 @@ where
                 if front.len() <= written {
                     written -= front.len();
                     log::trace!(
-                        "rotated buffer of length {}, remaining: {}",
+                        "recycling buffer of length {}, remaining: {}",
                         front.len(),
                         written
                     );

@@ -10,10 +10,10 @@ use std::{
 };
 
 use mio::{net::TcpStream, Interest, Token};
-use protosocket::{Connection, NetworkStatusEvent};
+use protosocket::{Connection, ConnectionDriver, NetworkStatusEvent};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{ConnectionDriver, Error, ProstClientConnectionBindings, ProstSerializer};
+use crate::{Error, ProstClientConnectionBindings, ProstSerializer};
 
 /// The root IO tracker for a class of clients.
 /// You can use different kinds of clients with a single registry. The registry generates network status
