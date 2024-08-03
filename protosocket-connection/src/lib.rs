@@ -5,6 +5,8 @@ mod types;
 pub use connection::Connection;
 pub use connection::NetworkStatusEvent;
 pub use connection_driver::ConnectionDriver;
+pub use connection_driver::MessageReactor;
+pub use connection_driver::ReactorStatus;
 pub use types::ConnectionBindings;
 pub use types::DeserializeError;
 pub use types::Deserializer;

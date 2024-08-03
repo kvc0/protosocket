@@ -6,7 +6,6 @@ use std::{
 
 use mio::{net::TcpStream, Registry};
 use tokio::sync::mpsc;
-use tokio_util::sync::PollSender;
 
 use crate::{
     interrupted,
@@ -17,7 +16,8 @@ use crate::{
 pub struct Connection<Bindings: ConnectionBindings> {
     stream: mio::net::TcpStream,
     outbound_messages: mpsc::Receiver<<Bindings::Serializer as Serializer>::Message>,
-    inbound_messages: PollSender<<Bindings::Deserializer as Deserializer>::Message>,
+    outbound_message_buffer: Vec<<Bindings::Serializer as Serializer>::Message>,
+    inbound_messages: VecDeque<<Bindings::Deserializer as Deserializer>::Message>,
     serializer_buffers: Vec<Vec<u8>>,
     send_buffer: VecDeque<Vec<u8>>,
     receive_buffer_slice_end: usize,
@@ -103,19 +103,19 @@ where
         max_message_length: usize,
         max_queued_send_messages: usize,
     ) -> (
-        mpsc::Sender<<Bindings::Serializer as Serializer>::Message>,
-        mpsc::Receiver<<Bindings::Deserializer as Deserializer>::Message>,
-        Self,
+        mpsc::Sender<<<Bindings as ConnectionBindings>::Serializer as Serializer>::Message>,
+        Connection<Bindings>,
     ) {
-        let (outbound_sender, outbound_receiver) = mpsc::channel(256);
-        let (inbound_sender, inbound_receiver) = mpsc::channel(256);
+        // outbound must be queued so it can be called from any context
+        let (outbound_submission_queue, outbound_messages) =
+            mpsc::channel(max_queued_send_messages);
         (
-            outbound_sender,
-            inbound_receiver,
+            outbound_submission_queue,
             Self {
                 stream,
-                outbound_messages: outbound_receiver,
-                inbound_messages: PollSender::new(inbound_sender),
+                outbound_messages,
+                outbound_message_buffer: Vec::new(),
+                inbound_messages: VecDeque::with_capacity(max_queued_send_messages),
                 send_buffer: Default::default(),
                 serializer_buffers: Vec::from_iter((0..1).map(|_| Vec::new())),
                 receive_buffer: Vec::new(),
@@ -172,7 +172,10 @@ where
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub fn poll_read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
+    pub fn poll_read_inbound(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> std::result::Result<bool, std::io::Error> {
         match self.readable {
             ReadState::NotReadable => return Ok(false),
             ReadState::Closed => return Ok(true),
@@ -194,7 +197,7 @@ where
 
             if 0 < self.receive_buffer.len() - self.receive_buffer_slice_end {
                 // We can (maybe) read from the connection.
-                if let Some(early_out) = self.read_from_stream() {
+                if let Some(early_out) = self.poll_read_from_stream(context) {
                     return early_out;
                 }
             } else {
@@ -204,25 +207,24 @@ where
         Ok(false)
     }
 
-    pub fn dispatch_messages_from_read_queue(
+    pub fn drain_inbound_messages(
         &mut self,
-        context: &mut Context,
+    ) -> std::collections::vec_deque::Drain<
+        <<Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
+    > {
+        self.inbound_messages.drain(..)
+    }
+
+    pub fn poll_read_inbound_messages_into_read_queue(
+        &mut self,
+        context: &mut Context<'_>,
     ) -> Result<bool, std::io::Error> {
+        let was_full = self.room_in_receive_buffer() == 0;
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
-            match self.inbound_messages.poll_reserve(context) {
-                std::task::Poll::Ready(Ok(_)) => {
-                    // ready
-                }
-                std::task::Poll::Ready(Err(_e)) => {
-                    log::info!("inbound channel closed - closing connection");
-                    self.readable = ReadState::Closed;
-                    return Ok(true);
-                }
-                std::task::Poll::Pending => {
-                    // can't accept any more inbound messages right now
-                    log::debug!("inbound message queue is draining too slowly");
-                    break;
-                }
+            if 0 == self.inbound_messages.len() - self.inbound_messages.capacity() {
+                // can't accept any more inbound messages right now
+                log::debug!("inbound message queue is draining too slowly");
+                break;
             }
 
             let buffer = &self.receive_buffer
@@ -230,11 +232,7 @@ where
             match self.deserializer.decode(buffer) {
                 Ok((length, message)) => {
                     self.receive_buffer_start_offset += length;
-                    if let Err(_e) = self.inbound_messages.send_item(message) {
-                        log::warn!("failure to send to inbound channel after reserving space - closing channel");
-                        self.readable = ReadState::Closed;
-                        return Ok(true);
-                    }
+                    self.inbound_messages.push_back(message);
                 }
                 Err(e) => match e {
                     DeserializeError::IncompleteBuffer { next_message_size } => {
@@ -283,6 +281,11 @@ where
                 },
             }
         }
+        let is_full = self.room_in_receive_buffer() == 0;
+        if was_full && !is_full && self.readable == ReadState::Readable {
+            log::debug!("receive buffer was full, but now has room. Waking the context to re-drive the driver loop");
+            context.waker().wake_by_ref();
+        }
         if self.receive_buffer_start_offset == self.receive_buffer_slice_end {
             log::debug!("read buffer complete - resetting");
             self.receive_buffer_start_offset = 0;
@@ -291,7 +294,10 @@ where
         Ok(false)
     }
 
-    fn read_from_stream(&mut self) -> Option<Result<bool, std::io::Error>> {
+    fn poll_read_from_stream(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Option<Result<bool, std::io::Error>> {
         match self
             .stream
             .read(&mut self.receive_buffer[self.receive_buffer_slice_end..])
@@ -315,6 +321,7 @@ where
             }
             Err(ref err) if interrupted(err) => {
                 log::trace!("interrupted, so try again later");
+                context.waker().wake_by_ref();
             }
             // Other errors we'll consider fatal.
             Err(err) => {
@@ -325,52 +332,74 @@ where
         None
     }
 
+    fn room_in_send_buffer(&self) -> usize {
+        self.max_queued_send_messages - self.send_buffer.len()
+    }
+
+    fn room_in_receive_buffer(&self) -> usize {
+        self.receive_buffer.len() - self.receive_buffer_slice_end
+    }
+
     /// This serializes work-in-progress messages and moves them over into the write queue
-    pub fn poll_serialize_oubound(&mut self, context: &mut Context<'_>) -> Poll<()> {
-        let max_outbound = self.max_queued_send_messages - self.send_buffer.len();
+    pub fn poll_write_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
+        let max_outbound = self.room_in_send_buffer();
         if max_outbound == 0 {
             log::debug!("send is full: {self}");
-            context.waker().wake_by_ref();
+            // pending on a network status event
             return Poll::Pending;
         }
-        let mut outbound = Vec::with_capacity(max_outbound.min(32));
-        match self
-            .outbound_messages
-            .poll_recv_many(context, &mut outbound, max_outbound)
-        {
-            std::task::Poll::Ready(how_many) => {
-                log::trace!("polled {how_many} messages to send");
-                for message in outbound.drain(..) {
-                    let mut buffer = self.serializer_buffers.pop().unwrap_or_default();
-                    self.serializer.encode(message, &mut buffer);
-                    if self.max_message_length < buffer.len() {
-                        log::error!(
-                            "tried to send too large a message. Max {}, attempted: {}",
-                            self.max_message_length,
-                            buffer.len()
-                        );
-                        return Poll::Ready(());
+
+        for _ in 0..max_outbound {
+            let message = match self.outbound_message_buffer.pop() {
+                Some(next) => next,
+                None => {
+                    match self.outbound_messages.poll_recv_many(
+                        context,
+                        &mut self.outbound_message_buffer,
+                        self.max_queued_send_messages,
+                    ) {
+                        Poll::Ready(count) => match self.outbound_message_buffer.pop() {
+                            Some(next) => next,
+                            None => {
+                                assert_eq!(0, count);
+                                log::info!("outbound message channel was closed");
+                                return Poll::Ready(());
+                            }
+                        },
+                        Poll::Pending => break,
                     }
-                    log::trace!(
-                        "serialized message and enqueueing outbound buffer: {}b",
-                        buffer.len()
-                    );
-                    // queue up a writev
-                    self.send_buffer.push_back(buffer);
                 }
-                // look for more messages
-                context.waker().wake_by_ref();
-                Poll::Pending
+            };
+            let mut buffer = self.serializer_buffers.pop().unwrap_or_default();
+            self.serializer.encode(message, &mut buffer);
+            if self.max_message_length < buffer.len() {
+                log::error!(
+                    "tried to send too large a message. Max {}, attempted: {}",
+                    self.max_message_length,
+                    buffer.len()
+                );
+                return Poll::Ready(());
             }
-            Poll::Pending => Poll::Pending,
+            log::trace!(
+                "serialized message and enqueueing outbound buffer: {}b",
+                buffer.len()
+            );
+            // queue up a writev
+            self.send_buffer.push_back(buffer);
         }
+        Poll::Pending
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    pub fn poll_write_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
+    pub fn poll_write_buffers(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> std::result::Result<bool, std::io::Error> {
         if !self.writable || self.send_buffer.is_empty() {
             return Ok(false);
         }
+
+        let was_full = self.room_in_send_buffer() == 0;
 
         /// I need to figure out how to get this from the os rather than hardcoding. 16 is the lowest I've seen mention of,
         /// and I've seen 1024 more commonly.
@@ -388,6 +417,10 @@ where
                 return Ok(true);
             }
             Ok(written) => {
+                if was_full {
+                    log::debug!("send buffer was full, but now has room. Waking the context to re-drive the driver loop");
+                    context.waker().wake_by_ref();
+                }
                 self.rotate_send_buffers(written);
             }
             // Would block "errors" are the OS's way of saying that the
@@ -398,6 +431,7 @@ where
             }
             Err(ref err) if interrupted(err) => {
                 log::trace!("write interrupted - try again later");
+                context.waker().wake_by_ref();
             }
             // other errors terminate the stream
             Err(err) => {

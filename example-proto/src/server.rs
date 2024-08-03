@@ -4,7 +4,9 @@ use std::{
 };
 
 use messages::{EchoResponse, Request, Response};
-use protosocket::{ConnectionBindings, ConnectionDriver, Deserializer, Serializer};
+use protosocket::{
+    ConnectionBindings, ConnectionDriver, MessageReactor, ReactorStatus, Serializer,
+};
 use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
 use protosocket_server::{Server, ServerConnector};
 use tokio::sync::Semaphore;
@@ -62,6 +64,7 @@ struct ServerContext {
 
 impl ServerConnector for ServerContext {
     type Bindings = ProstServerConnectionBindings<Request, Response>;
+    type Reactor = ProtoReflexReactor;
 
     fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
         ProstSerializer::default()
@@ -74,52 +77,68 @@ impl ServerConnector for ServerContext {
     fn take_new_connection(
         &self,
         address: std::net::SocketAddr,
-        outbound: tokio::sync::mpsc::Sender<
+        _outbound: tokio::sync::mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
-        mut inbound: tokio::sync::mpsc::Receiver<
-            <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
-        >,
-        connection_driver: ConnectionDriver<Self::Bindings>,
+        connection_driver: ConnectionDriver<Self::Bindings, Self::Reactor>,
     ) {
+        log::info!("new connection from {address:?}");
+        // The ProtoReflexReactor implements the server for this example server
         self.connection_runtime.spawn(connection_driver);
-        self.connection_runtime.spawn(async move {
-            log::info!("new connection from {address:?}");
+    }
 
-            let concurrent_requests = Arc::new(Semaphore::new(100));
+    fn new_reactor(
+        &self,
+        optional_outbound: tokio::sync::mpsc::Sender<
+            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
+        >,
+    ) -> Self::Reactor {
+        ProtoReflexReactor {
+            outbound: optional_outbound,
+            concurrent_requests: Arc::new(Semaphore::new(1024)),
+        }
+    }
+}
 
-            let mut buffer = Vec::new();
-            loop {
-                let count = inbound.recv_many(&mut buffer, 16).await;
-                if count == 0 {
-                    log::warn!("inbound closed");
-                    return;
+struct ProtoReflexReactor {
+    outbound: tokio::sync::mpsc::Sender<Response>,
+    concurrent_requests: Arc<Semaphore>,
+}
+impl MessageReactor for ProtoReflexReactor {
+    type Inbound = Request;
+
+    fn on_inbound_messages(
+        &mut self,
+        messages: impl IntoIterator<Item = Self::Inbound>,
+    ) -> ReactorStatus {
+        for message in messages {
+            let permit = match self.concurrent_requests.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    log::warn!("shedding load");
+                    continue;
+                    // could return err here and disconnect the client
+                    // return ReactorStatus::Disconnect;
                 }
-                for message in buffer.drain(..) {
-                    if let Ok(permit) = concurrent_requests.clone().acquire_owned().await {
-                        let outbound = outbound.clone();
-                        tokio::spawn(async move {
-                            let permit = permit;
-                            if let Err(e) = outbound
-                                .send(Response {
-                                    request_id: message.request_id,
-                                    body: message.body.map(|b| EchoResponse { message: b.message }),
-                                })
-                                .await
-                            {
-                                log::trace!("could not send response: {e:?}")
-                            }
-                            log::trace!(
-                                "permits at end of request handler: {}",
-                                permit.num_permits()
-                            );
-                        });
-                    } else {
-                        log::warn!("semaphore broken");
-                        return;
-                    }
+            };
+            let outbound = self.outbound.clone();
+            tokio::spawn(async move {
+                let permit = permit;
+                if let Err(e) = outbound
+                    .send(Response {
+                        request_id: message.request_id,
+                        body: message.body.map(|b| EchoResponse { message: b.message }),
+                    })
+                    .await
+                {
+                    log::trace!("could not send response: {e:?}")
                 }
-            }
-        });
+                log::trace!(
+                    "permits at end of request handler: {}",
+                    permit.num_permits()
+                );
+            });
+        }
+        ReactorStatus::Continue
     }
 }

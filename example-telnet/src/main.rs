@@ -6,7 +6,8 @@ use std::{
 };
 
 use protosocket::{
-    ConnectionBindings, ConnectionDriver, DeserializeError, Deserializer, Serializer,
+    ConnectionBindings, ConnectionDriver, DeserializeError, Deserializer, MessageReactor,
+    ReactorStatus, Serializer,
 };
 use protosocket_server::{Server, ServerConnector};
 
@@ -37,6 +38,7 @@ struct ServerContext {
 
 impl ServerConnector for ServerContext {
     type Bindings = StringContext;
+    type Reactor = StringReactor;
 
     fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
         StringSerializer
@@ -49,34 +51,55 @@ impl ServerConnector for ServerContext {
     fn take_new_connection(
         &self,
         address: std::net::SocketAddr,
-        outbound: tokio::sync::mpsc::Sender<
+        _outbound: tokio::sync::mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
-        mut inbound: tokio::sync::mpsc::Receiver<
-            <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
-        >,
-        connection_driver: ConnectionDriver<Self::Bindings>,
+        connection_driver: ConnectionDriver<Self::Bindings, Self::Reactor>,
     ) {
+        log::info!("new connection from {address:?}");
+        // The StringReactor implements the server for this example server
         tokio::spawn(connection_driver);
-        tokio::spawn(async move {
-            log::info!("new connection from {address:?}");
-            while let Some(mut message) = inbound.recv().await {
-                let outbound = outbound.clone();
-                tokio::spawn(async move {
-                    let seconds: u64 = message
-                        .split_ascii_whitespace()
-                        .next()
-                        .unwrap_or("0")
-                        .parse()
-                        .unwrap_or(0);
-                    tokio::time::sleep(Duration::from_secs(seconds)).await;
-                    message.push_str(" RAN");
-                    if let Err(e) = outbound.send(message).await {
-                        log::error!("send error: {e:?}");
-                    }
-                });
-            }
-        });
+    }
+
+    fn new_reactor(
+        &self,
+        optional_outbound: tokio::sync::mpsc::Sender<
+            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
+        >,
+    ) -> Self::Reactor {
+        StringReactor {
+            outbound: optional_outbound,
+        }
+    }
+}
+
+struct StringReactor {
+    outbound: tokio::sync::mpsc::Sender<String>,
+}
+impl MessageReactor for StringReactor {
+    type Inbound = String;
+
+    fn on_inbound_messages(
+        &mut self,
+        messages: impl IntoIterator<Item = Self::Inbound>,
+    ) -> ReactorStatus {
+        for mut message in messages.into_iter() {
+            let outbound = self.outbound.clone();
+            tokio::spawn(async move {
+                let seconds: u64 = message
+                    .split_ascii_whitespace()
+                    .next()
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or(0);
+                tokio::time::sleep(Duration::from_secs(seconds)).await;
+                message.push_str(" RAN");
+                if let Err(e) = outbound.send(message).await {
+                    log::error!("send error: {e:?}");
+                }
+            });
+        }
+        ReactorStatus::Continue
     }
 }
 

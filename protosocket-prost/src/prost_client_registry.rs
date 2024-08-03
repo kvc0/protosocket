@@ -10,7 +10,7 @@ use std::{
 };
 
 use mio::{net::TcpStream, Interest, Token};
-use protosocket::{Connection, ConnectionDriver, NetworkStatusEvent};
+use protosocket::{Connection, ConnectionDriver, MessageReactor, NetworkStatusEvent};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{Error, ProstClientConnectionBindings, ProstSerializer};
@@ -51,17 +51,18 @@ impl ClientRegistry {
     }
 
     /// Get a new connection to a protosocket server.
-    pub async fn register_client<Request, Response>(
+    pub async fn register_client<Request, Response, Reactor>(
         &self,
         address: impl Into<String>,
+        message_reactor: Reactor,
     ) -> crate::Result<(
         mpsc::Sender<Request>,
-        mpsc::Receiver<Response>,
-        ConnectionDriver<ProstClientConnectionBindings<Request, Response>>,
+        ConnectionDriver<ProstClientConnectionBindings<Request, Response>, Reactor>,
     )>
     where
         Request: prost::Message + Default + Unpin,
         Response: prost::Message + Default + Unpin,
+        Reactor: MessageReactor<Inbound = Response>,
     {
         let address = address.into().parse()?;
         let stream = TcpStream::connect(address).map_err(std::sync::Arc::new)?;
@@ -75,7 +76,7 @@ impl ClientRegistry {
             network_readiness,
         } = registration.await.map_err(|_e| Error::Dead("canceled"))?;
 
-        let (outbound, inbound, connection) =
+        let (outbound, connection) =
             Connection::<ProstClientConnectionBindings<Request, Response>>::new(
                 stream,
                 ProstSerializer::default(),
@@ -83,8 +84,9 @@ impl ClientRegistry {
                 self.max_message_length,
                 self.max_queued_outbound_messages,
             );
-        let connection_driver = ConnectionDriver::new(connection, network_readiness);
-        Ok((outbound, inbound, connection_driver))
+        let connection_driver =
+            ConnectionDriver::new(connection, network_readiness, message_reactor);
+        Ok((outbound, connection_driver))
     }
 }
 

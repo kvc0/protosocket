@@ -12,6 +12,7 @@ use protosocket::Connection;
 use protosocket::ConnectionBindings;
 use protosocket::ConnectionDriver;
 use protosocket::Deserializer;
+use protosocket::MessageReactor;
 use protosocket::NetworkStatusEvent;
 use protosocket::Serializer;
 use tokio::sync::mpsc;
@@ -20,19 +21,27 @@ use crate::connection_acceptor::NewConnection;
 
 pub trait ServerConnector: Unpin {
     type Bindings: ConnectionBindings;
+    type Reactor: MessageReactor<
+        Inbound = <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
+    >;
 
     fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer;
     fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer;
+
+    fn new_reactor(
+        &self,
+        optional_outbound: mpsc::Sender<
+            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
+        >,
+    ) -> Self::Reactor;
+
     fn take_new_connection(
         &self,
         address: SocketAddr,
         outbound: mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
-        inbound: mpsc::Receiver<
-            <<Self::Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
-        >,
-        connection_driver: ConnectionDriver<Self::Bindings>,
+        connection_driver: ConnectionDriver<Self::Bindings, Self::Reactor>,
     );
 
     fn maximum_message_length(&self) -> usize {
@@ -124,25 +133,26 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
                     } else {
                         let serializer = self.server_state.serializer();
                         let deserializer = self.server_state.deserializer();
-                        let (outbound, inbound, connection) =
-                            Connection::<Connector::Bindings>::new(
-                                new_connection.stream,
-                                deserializer,
-                                serializer,
-                                self.server_state.maximum_message_length(),
-                                self.server_state.max_queued_outbound_messages(),
-                            );
+                        let (outbound, connection) = Connection::<Connector::Bindings>::new(
+                            new_connection.stream,
+                            deserializer,
+                            serializer,
+                            self.server_state.maximum_message_length(),
+                            self.server_state.max_queued_outbound_messages(),
+                        );
 
                         let (readiness_sender, network_readiness) = mpsc::unbounded_channel();
-                        let connection_driver =
-                            ConnectionDriver::new(connection, network_readiness);
+                        let connection_driver = ConnectionDriver::new(
+                            connection,
+                            network_readiness,
+                            self.server_state.new_reactor(outbound.clone()),
+                        );
                         self.connections_network_status
                             .insert(token, readiness_sender);
 
                         self.server_state.take_new_connection(
                             new_connection.address,
                             outbound,
-                            inbound,
                             connection_driver,
                         );
 

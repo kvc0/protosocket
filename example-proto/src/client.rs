@@ -4,6 +4,7 @@ use std::{
 };
 
 use messages::{EchoRequest, Request, Response};
+use protosocket::{MessageReactor, ReactorStatus};
 
 mod messages;
 
@@ -31,13 +32,17 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let response_count = Arc::new(AtomicUsize::new(0));
 
-    for _i in 0..64 {
-        let (outbound, inbound, connection_driver) = registry
-            .register_client::<Request, Response>("127.0.0.1:9000")
+    for _i in 0..1 {
+        let (outbound, connection_driver) = registry
+            .register_client::<Request, Response, ProtoCompletionReactor>(
+                "127.0.0.1:9000",
+                ProtoCompletionReactor {
+                    count: response_count.clone(),
+                },
+            )
             .await?;
-        let count = response_count.clone();
         let _connection_driver = tokio::spawn(connection_driver);
-        let _client_runtime = tokio::spawn(run_application(outbound, inbound, count));
+        let _client_runtime = tokio::spawn(run_message_generator(outbound));
     }
 
     let metrics = tokio::spawn(async move {
@@ -68,64 +73,57 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_application(
-    outbound: tokio::sync::mpsc::Sender<Request>,
-    mut inbound: tokio::sync::mpsc::Receiver<Response>,
+struct ProtoCompletionReactor {
     count: Arc<AtomicUsize>,
-) {
-    let producer = async move {
-        log::debug!("running producer");
-        let mut i = 1;
-        loop {
-            match outbound
-                .send(Request {
-                    request_id: i,
-                    body: Some(EchoRequest {
-                        message: i.to_string(),
-                    }),
-                })
-                .await
-            {
-                Ok(_) => {
-                    i += 1;
-                }
-                Err(e) => {
-                    log::error!("send should work: {e:?}");
-                }
-            }
-        }
-    };
+}
+impl MessageReactor for ProtoCompletionReactor {
+    type Inbound = Response;
 
-    let consumer = async move {
-        log::debug!("running consumer");
-        let mut receive_buffer = Vec::new();
-        loop {
-            let received = inbound.recv_many(&mut receive_buffer, 16).await;
-            if received == 0 {
-                log::warn!("inbound message channel was closed");
-                return;
-            }
-            for response in receive_buffer.drain(..) {
-                assert_eq!(
-                    response.request_id,
-                    response
-                        .body
-                        .unwrap_or_default()
-                        .message
-                        .parse()
-                        .unwrap_or_default()
-                );
-                assert_ne!(response.request_id, 0, "received bad message");
-                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+    fn on_inbound_messages(
+        &mut self,
+        messages: impl IntoIterator<Item = Self::Inbound>,
+    ) -> ReactorStatus {
+        log::debug!("received message response batch");
+        for response in messages.into_iter() {
+            assert_eq!(
+                response.request_id,
+                response
+                    .body
+                    .unwrap_or_default()
+                    .message
+                    .parse()
+                    .unwrap_or_default()
+            );
+            assert_ne!(response.request_id, 0, "received bad message");
+            self.count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-    };
-    tokio::select! {
-        _ = tokio::spawn(producer) => {
-            log::error!("producer ended")
-        }
-        _ = tokio::spawn(consumer) => {
-            log::error!("consumer ended")
+        ReactorStatus::Continue
+    }
+}
+
+async fn run_message_generator(outbound: tokio::sync::mpsc::Sender<Request>) {
+    log::debug!("running producer");
+    let mut i = 1;
+    let mut timer = tokio::time::interval(Duration::from_secs(1) / 100_000);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        timer.tick().await;
+        match outbound
+            .send(Request {
+                request_id: i,
+                body: Some(EchoRequest {
+                    message: i.to_string(),
+                }),
+            })
+            .await
+        {
+            Ok(_) => {
+                i += 1;
+            }
+            Err(e) => {
+                log::error!("send should work: {e:?}");
+            }
         }
     }
 }

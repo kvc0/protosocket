@@ -4,28 +4,58 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{Connection, ConnectionBindings, NetworkStatusEvent};
+use crate::{Connection, ConnectionBindings, Deserializer, NetworkStatusEvent};
 use tokio::sync::mpsc;
 
-/// To be spawned, this is the task that handles serialization, deserialization, and network readiness events.
-pub struct ConnectionDriver<Bindings: ConnectionBindings> {
-    connection: Connection<Bindings>,
-    network_readiness: mpsc::UnboundedReceiver<NetworkStatusEvent>,
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReactorStatus {
+    Continue,
+    Disconnect,
 }
 
-impl<Bindings: ConnectionBindings> ConnectionDriver<Bindings> {
+pub trait MessageReactor: Unpin {
+    type Inbound;
+
+    /// you must take all of the messages quickly. If you need to disconnect, return err.
+    fn on_inbound_messages(
+        &mut self,
+        messages: impl IntoIterator<Item = Self::Inbound>,
+    ) -> ReactorStatus;
+}
+
+/// To be spawned, this is the task that handles serialization, deserialization, and network readiness events.
+pub struct ConnectionDriver<
+    Bindings: ConnectionBindings,
+    Reactor: MessageReactor<Inbound = <Bindings::Deserializer as Deserializer>::Message>,
+> {
+    connection: Connection<Bindings>,
+    network_readiness: mpsc::UnboundedReceiver<NetworkStatusEvent>,
+    message_reactor: Reactor,
+}
+
+impl<
+        Bindings: ConnectionBindings,
+        Reactor: MessageReactor<Inbound = <Bindings::Deserializer as Deserializer>::Message>,
+    > ConnectionDriver<Bindings, Reactor>
+{
     pub fn new(
         connection: Connection<Bindings>,
         network_readiness: mpsc::UnboundedReceiver<NetworkStatusEvent>,
+        message_reactor: Reactor,
     ) -> Self {
         Self {
             connection,
             network_readiness,
+            message_reactor,
         }
     }
 }
 
-impl<Bindings: ConnectionBindings> ConnectionDriver<Bindings> {
+impl<
+        Bindings: ConnectionBindings,
+        Reactor: MessageReactor<Inbound = <Bindings::Deserializer as Deserializer>::Message>,
+    > ConnectionDriver<Bindings, Reactor>
+{
     fn poll_network_status(&mut self, context: &mut Context<'_>) -> Poll<()> {
         loop {
             break match self.network_readiness.poll_recv(context) {
@@ -43,7 +73,19 @@ impl<Bindings: ConnectionBindings> ConnectionDriver<Bindings> {
     }
 }
 
-impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
+/// safety: no unsafe code in here
+impl<
+        Bindings: ConnectionBindings,
+        Reactor: MessageReactor<Inbound = <Bindings::Deserializer as Deserializer>::Message>,
+    > Unpin for ConnectionDriver<Bindings, Reactor>
+{
+}
+
+impl<
+        Bindings: ConnectionBindings,
+        Reactor: MessageReactor<Inbound = <Bindings::Deserializer as Deserializer>::Message>,
+    > Future for ConnectionDriver<Bindings, Reactor>
+{
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
@@ -51,12 +93,12 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
             return Poll::Ready(early_out);
         }
 
-        if let Poll::Ready(early_out) = self.connection.poll_serialize_oubound(context) {
+        if let Poll::Ready(early_out) = self.connection.poll_write_outbound_messages(context) {
             log::debug!("dropping connection: outbound channel failure");
             return Poll::Ready(early_out);
         }
 
-        match self.connection.poll_write_buffers() {
+        match self.connection.poll_write_buffers(context) {
             Ok(closed) => {
                 if closed {
                     log::info!("write connection closed");
@@ -69,7 +111,7 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
             }
         }
 
-        match self.connection.poll_read_inbound() {
+        match self.connection.poll_read_inbound(context) {
             Ok(false) => {
                 // log::trace!("checked inbound connection buffer");
             }
@@ -88,7 +130,10 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
             }
         }
 
-        match self.connection.dispatch_messages_from_read_queue(context) {
+        match self
+            .connection
+            .poll_read_inbound_messages_into_read_queue(context)
+        {
             Ok(false) => {
                 // log::trace!("checked for messages to dispatch");
             }
@@ -105,6 +150,18 @@ impl<Bindings: ConnectionBindings> Future for ConnectionDriver<Bindings> {
                 log::warn!("dropping connection after read dispatch: {e:?}");
                 return Poll::Ready(());
             }
+        }
+
+        let Self {
+            connection,
+            message_reactor,
+            ..
+        } = &mut *self;
+        if message_reactor.on_inbound_messages(connection.drain_inbound_messages())
+            == ReactorStatus::Disconnect
+        {
+            log::debug!("reactor requested disconnect");
+            return Poll::Ready(());
         }
 
         Poll::Pending
