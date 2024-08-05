@@ -298,7 +298,9 @@ where
                 },
             }
         }
-        if self.receive_buffer_start_offset == self.receive_buffer_slice_end && self.receive_buffer_start_offset != 0 {
+        if self.receive_buffer_start_offset == self.receive_buffer_slice_end
+            && self.receive_buffer_start_offset != 0
+        {
             log::debug!("read buffer complete - resetting");
             self.receive_buffer_start_offset = 0;
             self.receive_buffer_slice_end = 0;
@@ -346,10 +348,6 @@ where
 
     fn room_in_send_buffer(&self) -> usize {
         self.max_queued_send_messages - self.send_buffer.len()
-    }
-
-    fn room_in_receive_buffer(&self) -> usize {
-        self.receive_buffer.len() - self.receive_buffer_slice_end
     }
 
     /// This serializes work-in-progress messages and moves them over into the write queue
