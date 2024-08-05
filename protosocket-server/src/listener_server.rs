@@ -1,4 +1,6 @@
-use mio::{net::TcpListener, Events, Interest, Poll, Token};
+use std::sync::Arc;
+
+use mio::{Events, Interest, Poll, Token};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -31,9 +33,10 @@ impl Server {
     /// see `register_multithreaded_service_listener` for a configuration that has multiple IO drivers for the service.
     pub fn register_service_listener<Connector: ServerConnector>(
         &mut self,
-        listener: std::net::TcpListener,
+        address: std::net::SocketAddr,
         server_state: Connector,
     ) -> Result<ConnectionServer<Connector>> {
+        let listener = mio::net::TcpListener::bind(address).map_err(Arc::new)?;
         let inbound_connection_assignments = self
             .register_acceptor(listener, 1)?
             .pop()
@@ -54,10 +57,11 @@ impl Server {
     /// listener must be configured non_blocking
     pub fn register_multithreaded_service_listener<Connector: ServerConnector + Clone>(
         &mut self,
-        listener: std::net::TcpListener,
+        address: std::net::SocketAddr,
         server_state: Connector,
         thread_count: usize,
     ) -> Result<Vec<ConnectionServer<Connector>>> {
+        let listener = mio::net::TcpListener::bind(address).map_err(Arc::new)?;
         let inbound_streams = self.register_acceptor(listener, thread_count)?;
 
         inbound_streams
@@ -70,13 +74,12 @@ impl Server {
 
     fn register_acceptor(
         &mut self,
-        listener: std::net::TcpListener,
+        mut listener: mio::net::TcpListener,
         thread_count: usize,
     ) -> Result<Vec<mpsc::UnboundedReceiver<NewConnection>>> {
         let token = Token(self.services.len());
         log::trace!("new service listener index {} on {listener:?}", token.0);
 
-        let mut listener = TcpListener::from_std(listener);
         self.poll
             .registry()
             .register(

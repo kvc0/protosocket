@@ -1,7 +1,4 @@
-use std::{
-    net::TcpListener,
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 
 use messages::{EchoResponse, Request, Response};
 use protosocket::{
@@ -35,10 +32,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         connection_runtime: connection_runtime.handle().clone(),
     };
 
-    let listener = TcpListener::bind("127.0.0.1:9000")?;
-    listener.set_nonblocking(true)?;
+    let address = "127.0.0.1:9000".parse()?;
     let port_nine_thousand = server.register_multithreaded_service_listener::<ServerContext>(
-        listener,
+        address,
         server_context.clone(),
         2,
     )?;

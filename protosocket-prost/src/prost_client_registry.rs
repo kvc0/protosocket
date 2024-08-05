@@ -111,6 +111,7 @@ pub struct ClientRegistryDriver {
     client_counter: usize,
     /// used to let the server settle into waiting for readiness
     poll_backoff: Duration,
+    max_poll_backoff: Duration,
 }
 
 impl ClientRegistryDriver {
@@ -124,7 +125,13 @@ impl ClientRegistryDriver {
             clients: Default::default(),
             client_counter: 0,
             poll_backoff: Duration::from_millis(1),
+            max_poll_backoff: Duration::from_millis(100),
         })
+    }
+
+    pub fn set_max_poll_backoff(&mut self, max_poll_backoff: Duration) {
+        // mio uses 1 millisecond as the minumum, but it might do something different in the future.
+        self.max_poll_backoff = max(max_poll_backoff, Duration::from_micros(1));
     }
 
     /// launch this client registry's IO on a background thread protoskt-{i}.
@@ -232,7 +239,7 @@ impl ClientRegistryDriver {
 
     fn decrease_poll_rate(&mut self) {
         self.poll_backoff = min(
-            Duration::from_millis(100),
+            self.max_poll_backoff,
             self.poll_backoff + Duration::from_micros(10),
         );
     }
