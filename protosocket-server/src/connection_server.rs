@@ -74,6 +74,7 @@ pub struct ConnectionServer<Connector: ServerConnector> {
     server_state: Connector,
     /// used to let the server settle into waiting for readiness
     poll_backoff: Duration,
+    max_poll_backoff: Duration,
 }
 
 impl<Connector: ServerConnector> std::future::Future for ConnectionServer<Connector> {
@@ -109,8 +110,14 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
             poll: mio::Poll::new().map_err(std::sync::Arc::new)?,
             events: mio::Events::with_capacity(1024),
             server_state,
-            poll_backoff: Duration::from_millis(200),
+            poll_backoff: Duration::from_millis(100),
+            max_poll_backoff: Duration::from_millis(100),
         })
+    }
+
+    pub fn set_max_poll_backoff(&mut self, max_poll_backoff: Duration) {
+        // mio uses 1 millisecond as the minimum, but it might do something different in the future.
+        self.max_poll_backoff = max(max_poll_backoff, Duration::from_micros(1));
     }
 
     fn poll_register_new_connections(
@@ -174,7 +181,7 @@ impl<Connector: ServerConnector> ConnectionServer<Connector> {
 
     fn decrease_poll_rate(&mut self) {
         self.poll_backoff = min(
-            Duration::from_millis(100),
+            self.max_poll_backoff,
             self.poll_backoff + Duration::from_micros(10),
         );
     }
