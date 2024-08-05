@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             )
         })
+        .worker_threads(2)
         .enable_all()
         .build()?;
 
@@ -34,7 +35,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let response_count = Arc::new(AtomicUsize::new(0));
 
-    for _i in 0..1 {
+    for _i in 0..2 {
         let concurrent_count = Arc::new(Semaphore::new(128));
         let concurrent = Arc::new(Mutex::new(HashMap::with_capacity(
             concurrent_count.available_permits(),

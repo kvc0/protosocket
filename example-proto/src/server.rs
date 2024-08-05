@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             )
         })
+        .worker_threads(2)
         .enable_all()
         .build()?;
 
@@ -36,23 +37,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind("127.0.0.1:9000")?;
     listener.set_nonblocking(true)?;
-    let port_nine_thousand =
-        server.register_service_listener::<ServerContext>(listener, server_context.clone())?;
+    let port_nine_thousand = server.register_multithreaded_service_listener::<ServerContext>(
+        listener,
+        server_context.clone(),
+        2,
+    )?;
 
     let listener = std::thread::Builder::new()
         .name("listener".to_string())
         .spawn(move || server.serve().expect("server must serve"))?;
-    let io = std::thread::Builder::new()
-        .name("service-io".to_string())
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .expect("io thread can have a runtime");
-            runtime.block_on(port_nine_thousand)
-        })?;
+    for io_thread in port_nine_thousand {
+        std::thread::Builder::new()
+            .name("service-io".to_string())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("io thread can have a runtime");
+                runtime.block_on(io_thread);
+            })?;
+    }
 
     listener.join().expect("listener completes");
-    io.join().expect("io completes");
     Ok(())
 }
 
