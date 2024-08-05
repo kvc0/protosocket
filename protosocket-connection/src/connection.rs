@@ -76,12 +76,16 @@ pub enum NetworkStatusEvent {
     Readable,
     Writable,
     ReadableWritable,
+    Closed,
 }
 
 impl TryFrom<&mio::event::Event> for NetworkStatusEvent {
     type Error = ();
 
     fn try_from(value: &mio::event::Event) -> Result<Self, ()> {
+        if value.is_error() || value.is_read_closed() || value.is_write_closed() {
+            return Ok(NetworkStatusEvent::Closed);
+        }
         match (value.is_readable(), value.is_writable()) {
             (true, true) => Ok(NetworkStatusEvent::ReadableWritable),
             (true, false) => Ok(NetworkStatusEvent::Readable),
@@ -143,21 +147,29 @@ where
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    pub fn handle_connection_event(&mut self, event: NetworkStatusEvent) {
+    /// returns true when the connection is closed
+    pub fn handle_connection_event(&mut self, event: NetworkStatusEvent) -> bool {
         match event {
             NetworkStatusEvent::Readable => {
                 log::trace!("connection is readable");
                 self.readable = ReadState::Readable;
+                false
             }
             NetworkStatusEvent::Writable => {
                 log::trace!("connection is writable");
                 self.writable = true;
+                false
             }
             NetworkStatusEvent::ReadableWritable => {
                 // &mio::event::Event
                 log::trace!("connection is rw");
                 self.writable = true;
                 self.readable = ReadState::Readable;
+                false
+            }
+            NetworkStatusEvent::Closed => {
+                log::debug!("connection is closed");
+                true
             }
         }
     }

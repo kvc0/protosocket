@@ -60,7 +60,10 @@ impl<
         loop {
             break match self.network_readiness.poll_recv(context) {
                 Poll::Ready(Some(event)) => {
-                    self.connection.handle_connection_event(event);
+                    let connection_is_closed = self.connection.handle_connection_event(event);
+                    if connection_is_closed {
+                        return Poll::Ready(());
+                    }
                     continue;
                 }
                 Poll::Ready(None) => {
