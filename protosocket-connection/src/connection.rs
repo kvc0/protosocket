@@ -71,7 +71,7 @@ impl<Lifecycle: ConnectionBindings> Drop for Connection<Lifecycle> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkStatusEvent {
     Readable,
     Writable,

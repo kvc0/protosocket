@@ -207,7 +207,12 @@ impl ClientRegistryDriver {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            if let Some(readiness) = self.clients.get_mut(&token) {
+            if event == NetworkStatusEvent::Closed {
+                // final readiness event
+                if let Some(readiness) = self.clients.remove(&token) {
+                    let _ = readiness.send(event);
+                }
+            } else if let Some(readiness) = self.clients.get_mut(&token) {
                 if let Err(_e) = readiness.send(event) {
                     log::debug!("client dropped");
                     return Poll::Ready(());
