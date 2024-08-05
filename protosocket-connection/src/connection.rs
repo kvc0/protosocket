@@ -84,6 +84,7 @@ impl TryFrom<&mio::event::Event> for NetworkStatusEvent {
 
     fn try_from(value: &mio::event::Event) -> Result<Self, ()> {
         if value.is_error() || value.is_read_closed() || value.is_write_closed() {
+            log::error!("error network status event: {value:?}");
             return Ok(NetworkStatusEvent::Closed);
         }
         match (value.is_readable(), value.is_writable()) {
