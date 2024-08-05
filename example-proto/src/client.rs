@@ -156,6 +156,7 @@ async fn run_message_generator(
             }
             Err(e) => {
                 log::error!("send should work: {e:?}");
+                return
             }
         }
     }

@@ -232,7 +232,11 @@ where
         &mut self,
         context: &mut Context<'_>,
     ) -> Result<bool, std::io::Error> {
-        let was_full = self.room_in_receive_buffer() == 0;
+        if self.readable == ReadState::Readable {
+            // loop back around for more until it's no longer readable
+            log::debug!("receive buffer is still readable");
+            context.waker().wake_by_ref();
+        }
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
             if 0 == self.inbound_messages.len() - self.inbound_messages.capacity() {
                 // can't accept any more inbound messages right now
@@ -259,7 +263,7 @@ where
                         {
                             let length =
                                 self.receive_buffer_slice_end - self.receive_buffer_start_offset;
-                            log::info!(
+                            log::debug!(
                                 "rotating {}b of buffer to make room for next message {}b",
                                 length,
                                 next_message_size
@@ -294,12 +298,7 @@ where
                 },
             }
         }
-        let is_full = self.room_in_receive_buffer() == 0;
-        if was_full && !is_full && self.readable == ReadState::Readable {
-            log::debug!("receive buffer was full, but now has room. Waking the context to re-drive the driver loop");
-            context.waker().wake_by_ref();
-        }
-        if self.receive_buffer_start_offset == self.receive_buffer_slice_end {
+        if self.receive_buffer_start_offset == self.receive_buffer_slice_end && self.receive_buffer_start_offset != 0 {
             log::debug!("read buffer complete - resetting");
             self.receive_buffer_start_offset = 0;
             self.receive_buffer_slice_end = 0;
