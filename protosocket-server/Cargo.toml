@@ -16,6 +16,5 @@ protosocket             = { workspace = true }
 bytes                   = { workspace = true }
 futures                 = { workspace = true }
 log                     = { workspace = true }
-mio                     = { workspace = true, features = ["net", "os-poll"] }
 thiserror               = { workspace = true }
 tokio                   = { workspace = true }

@@ -31,18 +31,20 @@ pub trait ServerConnector: Unpin {
     }
 }
 
-/// A ConnectionServer is an IO driver. It directly uses mio to poll the OS's io primitives,
-/// manages read and write buffers, and vends messages to & from connections.
-/// Connections interact with the ConnectionServer through mpsc channels.
+/// A Protosocket is an IO driver. It directly uses tokio's io wrapper of mio to poll the
+/// OS's io primitives, manages read and write buffers, and vends messages to & from connections.
+/// Connections send messages to the ConnectionServer through an mpsc channel, and they receive
+/// inbound messages via a reactor callback.
 ///
 /// Protosockets are monomorphic messages - you can only have 1 kind of message per service.
 /// The expected way to work with this is to use prost and protocol buffers to encode messages.
+/// Of course you can do whatever you want, as the telnet example shows.
 ///
 /// Protosocket messages are not opinionated about request & reply. If you are, you will need
 /// to implement such a thing. This allows you freely choose whether you want to send
 /// fire-&-forget messages sometimes; however it requires you to write your protocol's rules.
-/// You get an inbound stream of <MessageIn> and an outbound stream of <MessageOut> per
-/// connection - you decide what those streams mean for you!
+/// You get an inbound iterable of <MessageIn> batches and an outbound stream of <MessageOut> per
+/// connection - you decide what those mean for you!
 pub struct ProtosocketServer<Connector: ServerConnector> {
     connector: Connector,
     listener: tokio::net::TcpListener,

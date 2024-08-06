@@ -154,31 +154,6 @@ impl<Lifecycle: ConnectionBindings> Drop for Connection<Lifecycle> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetworkStatusEvent {
-    Readable,
-    Writable,
-    ReadableWritable,
-    Closed,
-}
-
-impl TryFrom<&mio::event::Event> for NetworkStatusEvent {
-    type Error = ();
-
-    fn try_from(value: &mio::event::Event) -> Result<Self, ()> {
-        if value.is_error() || value.is_read_closed() || value.is_write_closed() {
-            log::error!("error network status event: {value:?}");
-            return Ok(NetworkStatusEvent::Closed);
-        }
-        match (value.is_readable(), value.is_writable()) {
-            (true, true) => Ok(NetworkStatusEvent::ReadableWritable),
-            (true, false) => Ok(NetworkStatusEvent::Readable),
-            (false, true) => Ok(NetworkStatusEvent::Writable),
-            (false, false) => Err(()),
-        }
-    }
-}
-
 impl<Bindings: ConnectionBindings> Connection<Bindings>
 where
     <Bindings::Deserializer as Deserializer>::Message: Send,
@@ -421,7 +396,6 @@ where
         Poll::Pending
     }
 
-    /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
     pub fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
         if self.send_buffer.is_empty() {
             return Ok(false);

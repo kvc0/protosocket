@@ -2,7 +2,6 @@ mod connection;
 mod types;
 
 pub use connection::Connection;
-pub use connection::NetworkStatusEvent;
 pub use types::ConnectionBindings;
 pub use types::DeserializeError;
 pub use types::Deserializer;

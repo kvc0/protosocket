@@ -366,7 +366,6 @@ checksum = "4569e456d394deccd22ce1c1913e6ea0e54519f577285001215d33557431afe4"
 dependencies = [
  "hermit-abi",
  "libc",
- "log",
  "wasi",
  "windows-sys",
 ]
@@ -454,7 +453,6 @@ dependencies = [
  "bytes",
  "futures",
  "log",
- "mio",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -466,7 +464,6 @@ version = "0.5.0"
 dependencies = [
  "bytes",
  "log",
- "mio",
  "prost",
  "protosocket",
  "thiserror",
@@ -480,7 +477,6 @@ dependencies = [
  "bytes",
  "futures",
  "log",
- "mio",
  "protosocket",
  "thiserror",
  "tokio",
