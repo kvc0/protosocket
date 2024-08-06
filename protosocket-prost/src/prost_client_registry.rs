@@ -7,21 +7,17 @@ use crate::{ProstClientConnectionBindings, ProstSerializer};
 pub struct ClientRegistry {
     max_message_length: usize,
     max_queued_outbound_messages: usize,
-}
-
-impl Default for ClientRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
+    runtime: tokio::runtime::Handle,
 }
 
 impl ClientRegistry {
     /// Construct a new client registry. You will spawn the registry driver, probably on a dedicated thread.
-    pub fn new() -> Self {
+    pub fn new(runtime: tokio::runtime::Handle) -> Self {
         log::trace!("new client registry");
         Self {
             max_message_length: 4 * (2 << 20),
             max_queued_outbound_messages: 256,
+            runtime,
         }
     }
 
@@ -60,7 +56,7 @@ impl ClientRegistry {
                 outbound_messages,
                 message_reactor,
             );
-        tokio::spawn(connection);
+        self.runtime.spawn(connection);
         Ok(outbound)
     }
 }

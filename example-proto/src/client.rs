@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut registry = protosocket_prost::ClientRegistry::new();
+    let mut registry = protosocket_prost::ClientRegistry::new(tokio::runtime::Handle::current());
     registry.set_max_message_length(16 * 1024);
 
     let response_count = Arc::new(AtomicUsize::new(0));

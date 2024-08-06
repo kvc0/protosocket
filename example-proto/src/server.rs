@@ -15,7 +15,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_context = ServerContext {
         _connections: Default::default(),
     };
-    let server = ProtosocketServer::new("127.0.0.1:9000".parse()?, server_context).await?;
+    let server = ProtosocketServer::new(
+        "127.0.0.1:9000".parse()?,
+        tokio::runtime::Handle::current(),
+        server_context,
+    )
+    .await?;
 
     tokio::spawn(server).await.expect("listener completes");
     Ok(())

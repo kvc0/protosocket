@@ -48,10 +48,15 @@ pub struct ProtosocketServer<Connector: ServerConnector> {
     listener: tokio::net::TcpListener,
     max_buffer_length: usize,
     max_queued_outbound_messages: usize,
+    runtime: tokio::runtime::Handle,
 }
 
 impl<Connector: ServerConnector> ProtosocketServer<Connector> {
-    pub async fn new(address: std::net::SocketAddr, connector: Connector) -> crate::Result<Self> {
+    pub async fn new(
+        address: std::net::SocketAddr,
+        runtime: tokio::runtime::Handle,
+        connector: Connector,
+    ) -> crate::Result<Self> {
         let listener = tokio::net::TcpListener::bind(address)
             .await
             .map_err(Arc::new)?;
@@ -60,6 +65,7 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
             listener,
             max_buffer_length: 16 * (2 << 20),
             max_queued_outbound_messages: 128,
+            runtime,
         })
     }
 
@@ -95,7 +101,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                             outbound_messages,
                             reactor,
                         );
-                        tokio::spawn(connection);
+                        self.runtime.spawn(connection);
                         continue;
                     }
                     Err(e) => {
