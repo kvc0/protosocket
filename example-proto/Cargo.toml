@@ -23,3 +23,5 @@ futures                 = { workspace = true }
 log                     = { workspace = true }
 prost                   = { workspace = true }
 tokio                   = { workspace = true, features = ["full"] }
+
+histogram               = { version = "0.11" }

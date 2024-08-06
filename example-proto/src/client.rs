@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{atomic::AtomicUsize, Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use messages::{EchoRequest, Request, Response};
@@ -33,6 +33,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     registry.set_max_message_length(16 * 1024);
 
     let response_count = Arc::new(AtomicUsize::new(0));
+    let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     for _i in 0..2 {
         let concurrent_count = Arc::new(Semaphore::new(128));
@@ -41,9 +42,10 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         )));
         let outbound = registry
             .register_client::<Request, Response, ProtoCompletionReactor>(
-                "127.0.0.1:9000",
+                std::env::var("ENDPOINT").unwrap_or_else(|_| "127.0.0.1:9000".to_string()),
                 ProtoCompletionReactor {
                     count: response_count.clone(),
+                    latency: latency.clone(),
                     concurrent: concurrent.clone(),
                     concurrent_wip: Default::default(),
                 },
@@ -58,13 +60,35 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let metrics = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
-        let start = Instant::now();
         loop {
+            let start = Instant::now();
             interval.tick().await;
-            let total = response_count.load(std::sync::atomic::Ordering::Relaxed);
+            let total = response_count.swap(0, std::sync::atomic::Ordering::Relaxed);
             let hz = (total as f64) / start.elapsed().as_secs_f64().max(0.1);
 
-            eprint!("\rMessages: {total:10}, rate: {hz:9.1}hz");
+            let latency = latency.drain();
+            let p90 = *latency
+                .percentile(0.9)
+                .unwrap_or_default()
+                .expect("come on")
+                .range()
+                .end() as f64
+                / 1000.0;
+            let p999 = *latency
+                .percentile(0.999)
+                .unwrap_or_default()
+                .expect("come on")
+                .range()
+                .end() as f64
+                / 1000.0;
+            let p9999 = *latency
+                .percentile(0.9999)
+                .unwrap_or_default()
+                .expect("come on")
+                .range()
+                .end() as f64
+                / 1000.0;
+            eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs");
         }
     });
 
@@ -85,6 +109,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct ProtoCompletionReactor {
     count: Arc<AtomicUsize>,
+    latency: Arc<histogram::AtomicHistogram>,
     concurrent: Arc<Mutex<HashMap<u64, OwnedSemaphorePermit>>>,
     concurrent_wip: HashMap<u64, OwnedSemaphorePermit>,
 }
@@ -108,6 +133,12 @@ impl MessageReactor for ProtoCompletionReactor {
                     .remove(&response.request_id)
                     .expect("must not receive messages that have not been sent"),
             );
+            let latency = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time works")
+                .as_nanos() as u64
+                - response.body.as_ref().expect("must have a body").nanotime;
+            let _ = self.latency.increment(latency);
             assert_eq!(
                 response.request_id,
                 response
@@ -144,6 +175,10 @@ async fn run_message_generator(
                 request_id: i,
                 body: Some(EchoRequest {
                     message: i.to_string(),
+                    nanotime: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("time works")
+                        .as_nanos() as u64,
                 }),
             })
             .await

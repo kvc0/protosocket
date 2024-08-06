@@ -10,6 +10,8 @@ pub struct Request {
 pub struct EchoRequest {
     #[prost(string, tag = "1")]
     pub message: String,
+    #[prost(uint64, tag = "2")]
+    pub nanotime: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]
@@ -24,4 +26,6 @@ pub struct Response {
 pub struct EchoResponse {
     #[prost(string, tag = "1")]
     pub message: String,
+    #[prost(uint64, tag = "2")]
+    pub nanotime: u64,
 }

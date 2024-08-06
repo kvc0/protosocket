@@ -16,7 +16,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _connections: Default::default(),
     };
     let server = ProtosocketServer::new(
-        "127.0.0.1:9000".parse()?,
+        std::env::var("HOST")
+            .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
+            .parse()?,
         tokio::runtime::Handle::current(),
         server_context,
     )
@@ -82,7 +84,10 @@ impl MessageReactor for ProtoReflexReactor {
                 if let Err(e) = outbound
                     .send(Response {
                         request_id: message.request_id,
-                        body: message.body.map(|b| EchoResponse { message: b.message }),
+                        body: message.body.map(|b| EchoResponse {
+                            message: b.message,
+                            nanotime: b.nanotime,
+                        }),
                     })
                     .await
                 {
