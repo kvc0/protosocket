@@ -32,5 +32,5 @@ futures                 = { version = "0.3" }
 log                     = { version = "0.4" }
 prost                   = { version = "0.13" }
 thiserror               = { version = "1.0" }
-tokio                   = { version = "1.39", features = ["net"] }
+tokio                   = { version = "1.39", features = ["net", "rt"] }
 tokio-util              = { version = "0.7" }
