@@ -1,71 +1,33 @@
 use std::sync::{atomic::AtomicUsize, Arc};
 
 use messages::{EchoResponse, Request, Response};
-use protosocket::{
-    ConnectionBindings, ConnectionDriver, MessageReactor, ReactorStatus, Serializer,
-};
+use protosocket::{ConnectionBindings, MessageReactor, ReactorStatus, Serializer};
 use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
-use protosocket_server::{Server, ServerConnector};
+use protosocket_server::{ProtosocketServer, ServerConnector};
 use tokio::sync::Semaphore;
 
 mod messages;
 
 #[allow(clippy::expect_used)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-
-    static I: AtomicUsize = AtomicUsize::new(0);
-    let connection_runtime = tokio::runtime::Builder::new_multi_thread()
-        .thread_name_fn(|| {
-            format!(
-                "conn-{}",
-                I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            )
-        })
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
-
-    let mut server = Server::new()?;
     let server_context = ServerContext {
         _connections: Default::default(),
-        connection_runtime: connection_runtime.handle().clone(),
     };
+    let server = ProtosocketServer::new("127.0.0.1:9000".parse()?, server_context).await?;
 
-    let address = "127.0.0.1:9000".parse()?;
-    let port_nine_thousand = server.register_multithreaded_service_listener::<ServerContext>(
-        address,
-        server_context.clone(),
-        2,
-    )?;
-
-    let listener = std::thread::Builder::new()
-        .name("listener".to_string())
-        .spawn(move || server.serve().expect("server must serve"))?;
-    for io_thread in port_nine_thousand {
-        std::thread::Builder::new()
-            .name("service-io".to_string())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .build()
-                    .expect("io thread can have a runtime");
-                runtime.block_on(io_thread);
-            })?;
-    }
-
-    listener.join().expect("listener completes");
+    tokio::spawn(server).await.expect("listener completes");
     Ok(())
 }
 
 #[derive(Clone)]
 struct ServerContext {
     _connections: Arc<AtomicUsize>,
-    connection_runtime: tokio::runtime::Handle,
 }
 
 impl ServerConnector for ServerContext {
-    type Bindings = ProstServerConnectionBindings<Request, Response>;
-    type Reactor = ProtoReflexReactor;
+    type Bindings = ProstServerConnectionBindings<Request, Response, ProtoReflexReactor>;
 
     fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
         ProstSerializer::default()
@@ -75,25 +37,12 @@ impl ServerConnector for ServerContext {
         ProstSerializer::default()
     }
 
-    fn take_new_connection(
-        &self,
-        address: std::net::SocketAddr,
-        _outbound: tokio::sync::mpsc::Sender<
-            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
-        >,
-        connection_driver: ConnectionDriver<Self::Bindings, Self::Reactor>,
-    ) {
-        log::info!("new connection from {address:?}");
-        // The ProtoReflexReactor implements the server for this example server
-        self.connection_runtime.spawn(connection_driver);
-    }
-
     fn new_reactor(
         &self,
         optional_outbound: tokio::sync::mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
-    ) -> Self::Reactor {
+    ) -> <Self::Bindings as ConnectionBindings>::Reactor {
         ProtoReflexReactor {
             outbound: optional_outbound,
             concurrent_requests: Arc::new(Semaphore::new(1024)),

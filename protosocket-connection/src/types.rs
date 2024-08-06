@@ -1,10 +1,10 @@
-pub trait Serializer: Unpin {
+pub trait Serializer: Unpin + Send {
     type Message: Send;
 
     fn encode(&mut self, response: Self::Message, buffer: &mut impl bytes::BufMut);
 }
 
-pub trait Deserializer: Unpin {
+pub trait Deserializer: Unpin + Send {
     type Message: Send;
 
     fn decode(
@@ -26,7 +26,24 @@ pub enum DeserializeError {
     SkipMessage { distance: usize },
 }
 
-pub trait ConnectionBindings {
+pub trait MessageReactor: Unpin + Send + 'static {
+    type Inbound;
+
+    /// you must take all of the messages quickly. If you need to disconnect, return err.
+    fn on_inbound_messages(
+        &mut self,
+        messages: impl IntoIterator<Item = Self::Inbound>,
+    ) -> ReactorStatus;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReactorStatus {
+    Continue,
+    Disconnect,
+}
+
+pub trait ConnectionBindings: 'static {
     type Deserializer: Deserializer;
     type Serializer: Serializer;
+    type Reactor: MessageReactor<Inbound = <Self::Deserializer as Deserializer>::Message>;
 }

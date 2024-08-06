@@ -29,9 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let (mut registry, registry_driver) = protosocket_prost::ClientRegistry::new()?;
+    let mut registry = protosocket_prost::ClientRegistry::new();
     registry.set_max_message_length(16 * 1024);
-    let io = registry_driver.handle_io_on_dedicated_thread()?;
 
     let response_count = Arc::new(AtomicUsize::new(0));
 
@@ -40,7 +39,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         let concurrent = Arc::new(Mutex::new(HashMap::with_capacity(
             concurrent_count.available_permits(),
         )));
-        let (outbound, connection_driver) = registry
+        let outbound = registry
             .register_client::<Request, Response, ProtoCompletionReactor>(
                 "127.0.0.1:9000",
                 ProtoCompletionReactor {
@@ -50,7 +49,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )
             .await?;
-        let _connection_driver = tokio::spawn(connection_driver);
         let _client_runtime = tokio::spawn(run_message_generator(
             concurrent_count,
             concurrent.clone(),
@@ -81,7 +79,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
             log::warn!("metrics runtime quit");
         }
     );
-    io.join().expect("io completes");
 
     Ok(())
 }

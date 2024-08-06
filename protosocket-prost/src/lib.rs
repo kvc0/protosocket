@@ -9,4 +9,3 @@ pub use prost_socket::ProstClientConnectionBindings;
 pub use prost_socket::ProstServerConnectionBindings;
 
 pub use prost_client_registry::ClientRegistry;
-pub use prost_client_registry::ClientRegistryDriver;

@@ -5,27 +5,19 @@ use std::{
 };
 
 use protosocket::{
-    ConnectionBindings, ConnectionDriver, DeserializeError, Deserializer, MessageReactor,
-    ReactorStatus, Serializer,
+    ConnectionBindings, DeserializeError, Deserializer, MessageReactor, ReactorStatus, Serializer,
 };
-use protosocket_server::{Server, ServerConnector};
+use protosocket_server::{ProtosocketServer, ServerConnector};
 
 #[allow(clippy::expect_used)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut server = Server::new()?;
     let server_context = ServerContext::default();
-    let address = "127.0.0.1:9000".parse()?;
-    let port_nine_thousand =
-        server.register_service_listener::<ServerContext>(address, server_context.clone())?;
+    let server = ProtosocketServer::new("127.0.0.1:9000".parse()?, server_context).await?;
 
-    std::thread::spawn(move || server.serve().expect("server must serve"));
-
-    tokio::spawn(port_nine_thousand)
-        .await
-        .expect("service must serve");
+    tokio::spawn(server).await.expect("service must serve");
     Ok(())
 }
 
@@ -36,7 +28,6 @@ struct ServerContext {
 
 impl ServerConnector for ServerContext {
     type Bindings = StringContext;
-    type Reactor = StringReactor;
 
     fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
         StringSerializer
@@ -46,25 +37,12 @@ impl ServerConnector for ServerContext {
         StringSerializer
     }
 
-    fn take_new_connection(
-        &self,
-        address: std::net::SocketAddr,
-        _outbound: tokio::sync::mpsc::Sender<
-            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
-        >,
-        connection_driver: ConnectionDriver<Self::Bindings, Self::Reactor>,
-    ) {
-        log::info!("new connection from {address:?}");
-        // The StringReactor implements the server for this example server
-        tokio::spawn(connection_driver);
-    }
-
     fn new_reactor(
         &self,
         optional_outbound: tokio::sync::mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
-    ) -> Self::Reactor {
+    ) -> <Self::Bindings as ConnectionBindings>::Reactor {
         StringReactor {
             outbound: optional_outbound,
         }
@@ -106,6 +84,7 @@ struct StringContext;
 impl ConnectionBindings for StringContext {
     type Deserializer = StringSerializer;
     type Serializer = StringSerializer;
+    type Reactor = StringReactor;
 }
 
 struct StringSerializer;

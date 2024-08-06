@@ -1,20 +1,22 @@
 use std::{
     collections::VecDeque,
-    io::{IoSlice, Read, Write},
+    future::Future,
+    io::IoSlice,
+    pin::Pin,
     task::{Context, Poll},
 };
 
-use mio::{net::TcpStream, Registry};
 use tokio::sync::mpsc;
 
 use crate::{
     interrupted,
-    types::{ConnectionBindings, DeserializeError},
+    types::{ConnectionBindings, DeserializeError, MessageReactor, ReactorStatus},
     would_block, Deserializer, Serializer,
 };
 
 pub struct Connection<Bindings: ConnectionBindings> {
-    stream: mio::net::TcpStream,
+    stream: tokio::net::TcpStream,
+    address: std::net::SocketAddr,
     outbound_messages: mpsc::Receiver<<Bindings::Serializer as Serializer>::Message>,
     outbound_message_buffer: Vec<<Bindings::Serializer as Serializer>::Message>,
     inbound_messages: VecDeque<<Bindings::Deserializer as Deserializer>::Message>,
@@ -24,44 +26,125 @@ pub struct Connection<Bindings: ConnectionBindings> {
     receive_buffer_start_offset: usize,
     receive_buffer: Vec<u8>,
     receive_buffer_swap: Vec<u8>,
-    max_message_length: usize,
+    max_buffer_length: usize,
     max_queued_send_messages: usize,
     deserializer: Bindings::Deserializer,
     serializer: Bindings::Serializer,
-    readable: ReadState,
-    writable: bool,
+    reactor: Bindings::Reactor,
 }
 
 impl<Bindings: ConnectionBindings> std::fmt::Display for Connection<Bindings> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let read_state = self.readable;
         let read_start = self.receive_buffer_start_offset;
         let read_end = self.receive_buffer_slice_end;
-        let write_state = self.writable;
         let write_queue = self.send_buffer.len();
         let write_length: usize = self.send_buffer.iter().map(|b| b.len()).sum();
-        write!(f, "Connection: {{read{{state: {read_state}, start: {read_start}, end: {read_end}}}, write{{writable: {write_state}, queue: {write_queue}, length: {write_length}}}}}")
+        let address = self.address;
+        write!(f, "Connection: {address} {{read{{start: {read_start}, end: {read_end}}}, write{{queue: {write_queue}, length: {write_length}}}}}")
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReadState {
-    NotReadable,
-    Readable,
-    Closed,
-}
+impl<Bindings: ConnectionBindings> Unpin for Connection<Bindings> {}
 
-impl std::fmt::Display for ReadState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                ReadState::NotReadable => "not_readable",
-                ReadState::Readable => "readable",
-                ReadState::Closed => "closed",
+impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.receive_buffer_slice_end < self.max_buffer_length {
+            match self.stream.poll_read_ready(context) {
+                Poll::Ready(status) => {
+                    if let Err(e) = status {
+                        log::error!("error while polling read readiness: {e:?}");
+                        return Poll::Ready(());
+                    }
+                    // Not looping on receive, so if I'm readable I'll just come back around
+                    context.waker().wake_by_ref();
+                    match self.read_inbound() {
+                        Ok(true) => {
+                            log::info!("read connection closed");
+                            return Poll::Ready(());
+                        }
+                        Ok(false) => {
+                            log::trace!("read connection is still open");
+                        }
+                        Err(e) => {
+                            log::warn!("error while reading from tcp stream: {e:?}");
+                            return Poll::Ready(());
+                        }
+                    }
+                }
+                Poll::Pending => {
+                    log::trace!("read side is up to date");
+                }
             }
-        )
+        } else {
+            log::trace!("receive buffer is full");
+        }
+
+        match self.read_inbound_messages_into_read_queue() {
+            Ok(true) => {
+                log::info!("read queue closed");
+                return Poll::Ready(());
+            }
+            Ok(false) => {
+                log::trace!("read queue is still open");
+            }
+            Err(e) => {
+                log::warn!("error while reading from buffer: {e:?}");
+                return Poll::Ready(());
+            }
+        }
+        {
+            let Self {
+                reactor,
+                inbound_messages,
+                ..
+            } = &mut *self;
+            if reactor.on_inbound_messages(inbound_messages.drain(..)) == ReactorStatus::Disconnect
+            {
+                log::debug!("reactor requested disconnect");
+                return Poll::Ready(());
+            }
+        }
+
+        if let Poll::Ready(early_out) = self.poll_serialize_outbound_messages(context) {
+            return Poll::Ready(early_out);
+        }
+
+        if !self.send_buffer.is_empty() {
+            match self.stream.poll_write_ready(context) {
+                Poll::Ready(status) => {
+                    if let Err(e) = status {
+                        log::error!("error while polling write readiness: {e:?}");
+                        return Poll::Ready(());
+                    }
+
+                    match self.writev_buffers() {
+                        Ok(true) => {
+                            log::info!("write connection closed");
+                            return Poll::Ready(());
+                        }
+                        Ok(false) => {
+                            log::trace!("write connection is still open");
+                        }
+                        Err(e) => {
+                            log::warn!("error while writing to tcp stream: {e:?}");
+                            return Poll::Ready(());
+                        }
+                    }
+
+                    if !self.outbound_message_buffer.is_empty() {
+                        // not looping on send, so if I still have stuff to send I'll come back around
+                        context.waker().wake_by_ref();
+                    }
+                }
+                Poll::Pending => {
+                    log::trace!("write side is too slow");
+                }
+            }
+        }
+
+        Poll::Pending
     }
 }
 
@@ -100,78 +183,35 @@ impl<Bindings: ConnectionBindings> Connection<Bindings>
 where
     <Bindings::Deserializer as Deserializer>::Message: Send,
 {
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn new(
-        stream: TcpStream,
+        stream: tokio::net::TcpStream,
+        address: std::net::SocketAddr,
         deserializer: Bindings::Deserializer,
         serializer: Bindings::Serializer,
-        max_message_length: usize,
+        max_buffer_length: usize,
         max_queued_send_messages: usize,
-    ) -> (
-        mpsc::Sender<<<Bindings as ConnectionBindings>::Serializer as Serializer>::Message>,
-        Connection<Bindings>,
-    ) {
+        outbound_messages: mpsc::Receiver<<Bindings::Serializer as Serializer>::Message>,
+        reactor: Bindings::Reactor,
+    ) -> Connection<Bindings> {
         // outbound must be queued so it can be called from any context
-        let (outbound_submission_queue, outbound_messages) =
-            mpsc::channel(max_queued_send_messages);
-        (
-            outbound_submission_queue,
-            Self {
-                stream,
-                outbound_messages,
-                outbound_message_buffer: Vec::new(),
-                inbound_messages: VecDeque::with_capacity(max_queued_send_messages),
-                send_buffer: Default::default(),
-                serializer_buffers: Vec::from_iter((0..1).map(|_| Vec::new())),
-                receive_buffer: Vec::new(),
-                receive_buffer_swap: Vec::new(),
-                max_message_length,
-                receive_buffer_start_offset: 0,
-                max_queued_send_messages,
-                receive_buffer_slice_end: 0,
-                deserializer,
-                serializer,
-                readable: ReadState::NotReadable,
-                writable: false,
-            },
-        )
-    }
-
-    /// Drop self and gracefully deregister
-    pub fn deregister(mut self, registry: &Registry) {
-        match registry.deregister(&mut self.stream) {
-            Ok(_) => (),
-            Err(e) => {
-                log::warn!("failed to deregister stream from registry: {e:?}");
-            }
-        }
-    }
-
-    /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    /// returns true when the connection is closed
-    pub fn handle_connection_event(&mut self, event: NetworkStatusEvent) -> bool {
-        match event {
-            NetworkStatusEvent::Readable => {
-                log::trace!("connection is readable");
-                self.readable = ReadState::Readable;
-                false
-            }
-            NetworkStatusEvent::Writable => {
-                log::trace!("connection is writable");
-                self.writable = true;
-                false
-            }
-            NetworkStatusEvent::ReadableWritable => {
-                // &mio::event::Event
-                log::trace!("connection is rw");
-                self.writable = true;
-                self.readable = ReadState::Readable;
-                false
-            }
-            NetworkStatusEvent::Closed => {
-                log::debug!("connection is closed");
-                true
-            }
+        Self {
+            stream,
+            address,
+            outbound_messages,
+            outbound_message_buffer: Vec::new(),
+            inbound_messages: VecDeque::with_capacity(max_queued_send_messages),
+            send_buffer: Default::default(),
+            serializer_buffers: Vec::from_iter((0..1).map(|_| Vec::new())),
+            receive_buffer: Vec::new(),
+            receive_buffer_swap: Vec::new(),
+            max_buffer_length,
+            receive_buffer_start_offset: 0,
+            max_queued_send_messages,
+            receive_buffer_slice_end: 0,
+            deserializer,
+            serializer,
+            reactor,
         }
     }
 
@@ -180,44 +220,38 @@ where
         !(self.send_buffer.is_empty() && self.receive_buffer_slice_end == 0)
     }
 
-    /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    ///
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub fn poll_read_inbound(
-        &mut self,
-        context: &mut Context<'_>,
-    ) -> std::result::Result<bool, std::io::Error> {
-        match self.readable {
-            ReadState::NotReadable => return Ok(false),
-            ReadState::Closed => return Ok(true),
-            ReadState::Readable => {
-                // fall through
-            }
+    pub fn read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
+        const BUFFER_INCREMENT: usize = 16 * (2 << 10);
+        if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
+            self.receive_buffer.resize(
+                (self.receive_buffer.len() + BUFFER_INCREMENT).min(self.max_buffer_length),
+                0,
+            );
         }
 
-        if self.receive_buffer_slice_end == self.max_message_length {
-            log::trace!("receive buffer is full");
-        } else {
-            const BUFFER_INCREMENT: usize = 16 * (2 << 10);
-            if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
-                self.receive_buffer.resize(
-                    (self.receive_buffer.len() + BUFFER_INCREMENT).min(self.max_message_length),
-                    0,
-                );
-            }
-
-            if 0 < self.receive_buffer.len() - self.receive_buffer_slice_end {
-                // We can (maybe) read from the connection.
-                if let Some(early_out) = self.poll_read_from_stream(context) {
-                    return early_out;
+        if 0 < self.receive_buffer.len() - self.receive_buffer_slice_end {
+            // We can (maybe) read from the connection.
+            match self.read_from_stream() {
+                Ok(closed) => {
+                    if closed {
+                        log::info!("read connection closed");
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
                 }
-            } else {
-                log::debug!("receive is full {self}");
+                Err(e) => {
+                    log::trace!("io error during read: {e:?}");
+                    Err(e)
+                }
             }
+        } else {
+            log::debug!("receive is full {self}");
+            Ok(false)
         }
-        Ok(false)
     }
 
     pub fn drain_inbound_messages(
@@ -228,15 +262,7 @@ where
         self.inbound_messages.drain(..)
     }
 
-    pub fn poll_read_inbound_messages_into_read_queue(
-        &mut self,
-        context: &mut Context<'_>,
-    ) -> Result<bool, std::io::Error> {
-        if self.readable == ReadState::Readable {
-            // loop back around for more until it's no longer readable
-            log::debug!("receive buffer is still readable");
-            context.waker().wake_by_ref();
-        }
+    pub fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
             if 0 == self.inbound_messages.len() - self.inbound_messages.capacity() {
                 // can't accept any more inbound messages right now
@@ -253,12 +279,11 @@ where
                 }
                 Err(e) => match e {
                     DeserializeError::IncompleteBuffer { next_message_size } => {
-                        if self.max_message_length < next_message_size {
-                            log::error!("tried to receive message that is too long. Resetting connection - max: {}, requested: {}", self.max_message_length, next_message_size);
-                            self.readable = ReadState::Closed;
+                        if self.max_buffer_length < next_message_size {
+                            log::error!("tried to receive message that is too long. Resetting connection - max: {}, requested: {}", self.max_buffer_length, next_message_size);
                             return Ok(true);
                         }
-                        if self.max_message_length
+                        if self.max_buffer_length
                             < self.receive_buffer_slice_end + next_message_size
                         {
                             let length =
@@ -282,7 +307,6 @@ where
                     }
                     DeserializeError::InvalidBuffer => {
                         log::error!("message was invalid - broken stream");
-                        self.readable = ReadState::Closed;
                         return Ok(true);
                     }
                     DeserializeError::SkipMessage { distance } => {
@@ -308,21 +332,17 @@ where
         Ok(false)
     }
 
-    fn poll_read_from_stream(
-        &mut self,
-        context: &mut Context<'_>,
-    ) -> Option<Result<bool, std::io::Error>> {
+    fn read_from_stream(&mut self) -> Result<bool, std::io::Error> {
         match self
             .stream
-            .read(&mut self.receive_buffer[self.receive_buffer_slice_end..])
+            .try_read(&mut self.receive_buffer[self.receive_buffer_slice_end..])
         {
             Ok(0) => {
                 log::info!(
                     "connection was shut down as recv returned 0. Requested {}",
                     self.receive_buffer.len() - self.receive_buffer_slice_end
                 );
-                self.readable = ReadState::Closed;
-                return Some(Ok(true));
+                return Ok(true);
             }
             Ok(bytes_read) => {
                 self.receive_buffer_slice_end += bytes_read;
@@ -331,19 +351,17 @@ where
             // connection is not actually ready to perform this I/O operation.
             Err(ref err) if would_block(err) => {
                 log::trace!("read everything. No longer readable");
-                self.readable = ReadState::NotReadable;
             }
             Err(ref err) if interrupted(err) => {
                 log::trace!("interrupted, so try again later");
-                context.waker().wake_by_ref();
             }
             // Other errors we'll consider fatal.
             Err(err) => {
                 log::warn!("error while reading from tcp stream. buffer length: {}b, offset: {}, offered length {}b, err: {err:?}", self.receive_buffer.len(), self.receive_buffer_slice_end, self.receive_buffer.len() - self.receive_buffer_slice_end);
-                return Some(Err(err));
+                return Err(err);
             }
         }
-        None
+        Ok(false)
     }
 
     fn room_in_send_buffer(&self) -> usize {
@@ -351,7 +369,7 @@ where
     }
 
     /// This serializes work-in-progress messages and moves them over into the write queue
-    pub fn poll_write_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
+    pub fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let max_outbound = self.room_in_send_buffer();
         if max_outbound == 0 {
             log::debug!("send is full: {self}");
@@ -376,16 +394,19 @@ where
                                 return Poll::Ready(());
                             }
                         },
-                        Poll::Pending => break,
+                        Poll::Pending => {
+                            log::trace!("no messages to serialize");
+                            break;
+                        }
                     }
                 }
             };
             let mut buffer = self.serializer_buffers.pop().unwrap_or_default();
             self.serializer.encode(message, &mut buffer);
-            if self.max_message_length < buffer.len() {
+            if self.max_buffer_length < buffer.len() {
                 log::error!(
                     "tried to send too large a message. Max {}, attempted: {}",
-                    self.max_message_length,
+                    self.max_buffer_length,
                     buffer.len()
                 );
                 return Poll::Ready(());
@@ -401,15 +422,10 @@ where
     }
 
     /// to make sure you stay live you want to handle_mio_connection_events before you work on read/write buffers
-    pub fn poll_write_buffers(
-        &mut self,
-        context: &mut Context<'_>,
-    ) -> std::result::Result<bool, std::io::Error> {
-        if !self.writable || self.send_buffer.is_empty() {
+    pub fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
+        if self.send_buffer.is_empty() {
             return Ok(false);
         }
-
-        let was_full = self.room_in_send_buffer() == 0;
 
         /// I need to figure out how to get this from the os rather than hardcoding. 16 is the lowest I've seen mention of,
         /// and I've seen 1024 more commonly.
@@ -421,27 +437,21 @@ where
             .take(UIO_MAXIOV)
             .map(|v| IoSlice::new(v))
             .collect();
-        match self.stream.write_vectored(&buffers) {
+        match self.stream.try_write_vectored(&buffers) {
             Ok(0) => {
                 log::info!("write stream was closed");
                 return Ok(true);
             }
             Ok(written) => {
-                if was_full {
-                    log::debug!("send buffer was full, but now has room. Waking the context to re-drive the driver loop");
-                    context.waker().wake_by_ref();
-                }
                 self.rotate_send_buffers(written);
             }
             // Would block "errors" are the OS's way of saying that the
             // connection is not actually ready to perform this I/O operation.
             Err(ref err) if would_block(err) => {
                 log::trace!("would block - no longer writable");
-                self.writable = false;
             }
             Err(ref err) if interrupted(err) => {
                 log::trace!("write interrupted - try again later");
-                context.waker().wake_by_ref();
             }
             // other errors terminate the stream
             Err(err) => {
