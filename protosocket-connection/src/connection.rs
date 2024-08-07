@@ -14,6 +14,13 @@ use crate::{
     would_block, Deserializer, Serializer,
 };
 
+/// A bidirectional, message-oriented tcp stream wrapper.
+///
+/// Connections are Futures that you spawn.
+/// To send messages, you push them into the outbound message stream.
+/// To receive messages, you implement a `MessageReactor`. Inbound messages are not
+/// wrapped in a Stream, in order to avoid an extra layer of async buffering. If you
+/// need to buffer messages or forward them to a Stream, you can do so in the reactor.
 pub struct Connection<Bindings: ConnectionBindings> {
     stream: tokio::net::TcpStream,
     address: std::net::SocketAddr,
@@ -158,6 +165,9 @@ impl<Bindings: ConnectionBindings> Connection<Bindings>
 where
     <Bindings::Deserializer as Deserializer>::Message: Send,
 {
+    /// Create a new protosocket Connection with the given stream and reactor.
+    ///
+    /// Probably you are interested in the `protosocket-server` or `protosocket-prost` crates.
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn new(
         stream: tokio::net::TcpStream,
@@ -190,15 +200,10 @@ where
         }
     }
 
-    /// true when the connection has stuff to do. This can return true when the inbound half of the connection is closed (e.g., nc)
-    pub fn has_work_in_flight(&self) -> bool {
-        !(self.send_buffer.is_empty() && self.receive_buffer_slice_end == 0)
-    }
-
     /// Ok(true) when the remote end closed the connection
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
-    pub fn read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
+    fn read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
         const BUFFER_INCREMENT: usize = 16 * (2 << 10);
         if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
             self.receive_buffer.resize(
@@ -229,15 +234,7 @@ where
         }
     }
 
-    pub fn drain_inbound_messages(
-        &mut self,
-    ) -> std::collections::vec_deque::Drain<
-        <<Bindings as ConnectionBindings>::Deserializer as Deserializer>::Message,
-    > {
-        self.inbound_messages.drain(..)
-    }
-
-    pub fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
+    fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
             if 0 == self.inbound_messages.len() - self.inbound_messages.capacity() {
                 // can't accept any more inbound messages right now
@@ -344,7 +341,7 @@ where
     }
 
     /// This serializes work-in-progress messages and moves them over into the write queue
-    pub fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
+    fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let max_outbound = self.room_in_send_buffer();
         if max_outbound == 0 {
             log::debug!("send is full: {self}");
@@ -396,7 +393,8 @@ where
         Poll::Pending
     }
 
-    pub fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
+    /// send buffers to the tcp stream, and recycle them if they are fully written
+    fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
         if self.send_buffer.is_empty() {
             return Ok(false);
         }
@@ -441,6 +439,7 @@ where
         Ok(false)
     }
 
+    /// Discard all written bytes, and recycle the buffers that are fully written
     fn rotate_send_buffers(&mut self, mut written: usize) {
         let total_written = written;
         while 0 < written {

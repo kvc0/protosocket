@@ -4,6 +4,8 @@ use protosocket::{ConnectionBindings, MessageReactor};
 
 use crate::prost_serializer::ProstSerializer;
 
+/// A convenience type for binding a `ProstSerializer` to a server-side
+/// `protosocket::Connection`.
 pub struct ProstServerConnectionBindings<Request, Response, Reactor> {
     _phantom: PhantomData<(Request, Response, Reactor)>,
 }
@@ -20,6 +22,8 @@ where
     type Reactor = Reactor;
 }
 
+/// A convenience type for binding a `ProstSerializer` to a client-side
+/// `protosocket::Connection`.
 pub struct ProstClientConnectionBindings<Request, Response, Reactor> {
     _phantom: PhantomData<(Request, Response, Reactor)>,
 }

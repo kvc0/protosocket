@@ -3,33 +3,38 @@ use tokio::{net::TcpStream, sync::mpsc};
 
 use crate::{ProstClientConnectionBindings, ProstSerializer};
 
+/// A factory for creating client connections to a `protosocket` server.
 #[derive(Debug, Clone)]
 pub struct ClientRegistry {
-    max_message_length: usize,
+    max_buffer_length: usize,
     max_queued_outbound_messages: usize,
     runtime: tokio::runtime::Handle,
 }
 
 impl ClientRegistry {
-    /// Construct a new client registry. You will spawn the registry driver, probably on a dedicated thread.
+    /// Construct a new client registry. Connections will be spawned on the provided runtime.
     pub fn new(runtime: tokio::runtime::Handle) -> Self {
         log::trace!("new client registry");
         Self {
-            max_message_length: 4 * (2 << 20),
+            max_buffer_length: 4 * (2 << 20),
             max_queued_outbound_messages: 256,
             runtime,
         }
     }
 
-    pub fn set_max_message_length(&mut self, max_message_length: usize) {
-        self.max_message_length = max_message_length;
+    /// Sets the maximum read buffer length for connections created by this registry after
+    /// the setting is applied.
+    pub fn set_max_read_buffer_length(&mut self, max_buffer_length: usize) {
+        self.max_buffer_length = max_buffer_length;
     }
 
+    /// Sets the maximum queued outbound messages for connections created by this registry after
+    /// the setting is applied.
     pub fn set_max_queued_outbound_messages(&mut self, max_queued_outbound_messages: usize) {
         self.max_queued_outbound_messages = max_queued_outbound_messages;
     }
 
-    /// Get a new connection to a protosocket server.
+    /// Get a new connection to a `protosocket` server.
     pub async fn register_client<Request, Response, Reactor>(
         &self,
         address: impl Into<String>,
@@ -51,7 +56,7 @@ impl ClientRegistry {
                 address,
                 ProstSerializer::default(),
                 ProstSerializer::default(),
-                self.max_message_length,
+                self.max_buffer_length,
                 self.max_queued_outbound_messages,
                 outbound_messages,
                 message_reactor,

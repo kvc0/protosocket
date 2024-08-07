@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+/// Result type for protosocket-server.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Error type for protosocket-server.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("IO failure: {0}")]

@@ -30,7 +30,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let mut registry = protosocket_prost::ClientRegistry::new(tokio::runtime::Handle::current());
-    registry.set_max_message_length(16 * 1024);
+    registry.set_max_read_buffer_length(16 * 1024);
 
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));

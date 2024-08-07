@@ -2,7 +2,9 @@ use std::marker::PhantomData;
 
 use protosocket::{DeserializeError, Deserializer, Serializer};
 
-#[derive(Default)]
+/// A stateless implementation of protosocket's `Serializer` and `Deserializer`
+/// traits using `prost` for encoding and decoding protocol buffers messages.
+#[derive(Default, Debug)]
 pub struct ProstSerializer<Request, Response> {
     pub(crate) _phantom: PhantomData<(Request, Response)>,
 }

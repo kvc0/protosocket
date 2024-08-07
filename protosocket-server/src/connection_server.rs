@@ -31,12 +31,12 @@ pub trait ServerConnector: Unpin {
     }
 }
 
-/// A Protosocket is an IO driver. It directly uses tokio's io wrapper of mio to poll the
-/// OS's io primitives, manages read and write buffers, and vends messages to & from connections.
+/// A `protosocket::Connection` is an IO driver. It directly uses tokio's io wrapper of mio to poll
+/// the OS's io primitives, manages read and write buffers, and vends messages to & from connections.
 /// Connections send messages to the ConnectionServer through an mpsc channel, and they receive
 /// inbound messages via a reactor callback.
 ///
-/// Protosockets are monomorphic messages - you can only have 1 kind of message per service.
+/// Protosockets are monomorphic messages: You can only have 1 kind of message per service.
 /// The expected way to work with this is to use prost and protocol buffers to encode messages.
 /// Of course you can do whatever you want, as the telnet example shows.
 ///
@@ -45,6 +45,8 @@ pub trait ServerConnector: Unpin {
 /// fire-&-forget messages sometimes; however it requires you to write your protocol's rules.
 /// You get an inbound iterable of <MessageIn> batches and an outbound stream of <MessageOut> per
 /// connection - you decide what those mean for you!
+///
+/// A ProtosocketServer is a future: You spawn it and it runs forever.
 pub struct ProtosocketServer<Connector: ServerConnector> {
     connector: Connector,
     listener: tokio::net::TcpListener,
@@ -54,6 +56,9 @@ pub struct ProtosocketServer<Connector: ServerConnector> {
 }
 
 impl<Connector: ServerConnector> ProtosocketServer<Connector> {
+    /// Construct a new `ProtosocketServer` listening on the provided address.
+    /// The address will be bound and listened upon with `SO_REUSEADDR` set.
+    /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
     pub async fn new(
         address: std::net::SocketAddr,
         runtime: tokio::runtime::Handle,
@@ -71,10 +76,12 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
         })
     }
 
+    /// Set the maximum buffer length for connections created by this server after the setting is applied.
     pub fn set_max_buffer_length(&mut self, max_buffer_length: usize) {
         self.max_buffer_length = max_buffer_length;
     }
 
+    /// Set the maximum queued outbound messages for connections created by this server after the setting is applied.
     pub fn set_max_queued_outbound_messages(&mut self, max_queued_outbound_messages: usize) {
         self.max_queued_outbound_messages = max_queued_outbound_messages;
     }
