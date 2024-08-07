@@ -239,7 +239,7 @@ where
 
     pub fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
-            if self.inbound_messages.len() >= self.inbound_messages.capacity() {
+            if self.inbound_messages.capacity() == self.inbound_messages.len()  {
                 // can't accept any more inbound messages right now
                 log::debug!("inbound message queue is draining too slowly");
                 break;
