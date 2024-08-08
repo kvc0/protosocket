@@ -14,6 +14,8 @@ use crate::{
     would_block, Deserializer, Serializer,
 };
 
+const BUFFER_INCREMENT: usize = 16 * (2 << 10);
+
 /// A bidirectional, message-oriented tcp stream wrapper.
 ///
 /// Connections are Futures that you spawn.
@@ -56,8 +58,26 @@ impl<Bindings: ConnectionBindings> Unpin for Connection<Bindings> {}
 impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     type Output = ();
 
+    /**
+     * The poll method is the core of the Connection's asynchronous behavior.
+     * It's recommended to familiarize yourself with the ConnectionBindings trait
+     * in the types.rs file of this crate before proceeding.
+     *
+     * This method performs the following steps:
+     *
+     * 1. Check for read readiness on the Connection's TcpStream.
+     * 2. If data is available, read raw bytes into the receive_buffer (up to max_buffer_length).
+     * 3. Deserialize the read bytes into Messages and store them in the inbound_messages queue.
+     * 4. Process all messages in the inbound queue using the user-provided MessageReactor.
+     * 5. Check the outbound_messages queue for messages to send.
+     * 6. If outbound messages exist, check for write readiness and send serialized messages.
+     *
+     * The method returns Poll::Ready(()) when the connection is closed (gracefully or due to an error).
+     * It returns Poll::Pending when the connection is still active and may have more work to do in the future.
+     */
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.receive_buffer_slice_end < self.max_buffer_length {
+            // Step 1: Check if there's space in the receive buffer and the stream is ready for reading
             match self.stream.poll_read_ready(context) {
                 Poll::Ready(status) => {
                     if let Err(e) = status {
@@ -66,6 +86,8 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
                     }
                     // Not looping on receive, so if I'm readable I'll just come back around
                     context.waker().wake_by_ref();
+
+                    // Step 2: read raw bytes from the stream
                     match self.read_inbound() {
                         Ok(true) => {
                             log::info!("read connection closed");
@@ -88,6 +110,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
             log::trace!("receive buffer is full");
         }
 
+        // Step 3: Deserialize read bytes into messages
         match self.read_inbound_messages_into_read_queue() {
             Ok(true) => {
                 log::info!("read queue closed");
@@ -102,6 +125,8 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
             }
         }
         {
+            // Create a new scope to allow for for fine-grained borrowing of Self.
+            // Step 4: Process inbound messages with the Connection's MessageReactor
             let Self {
                 reactor,
                 inbound_messages,
@@ -114,10 +139,13 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
             }
         }
 
+        // Step 5: Prepare outbound messages for sending. We serialize the outbound bytes here as per the
+        // Connection's serializer
         if let Poll::Ready(early_out) = self.poll_serialize_outbound_messages(context) {
             return Poll::Ready(early_out);
         }
 
+        // Step 6: Send outbound messages if the stream is ready for writing
         if !self.send_buffer.is_empty() {
             match self.stream.poll_write_ready(context) {
                 Poll::Ready(status) => {
@@ -204,7 +232,6 @@ where
     /// Ok(false) when it's done and the remote is not closed
     /// Err should probably be fatal
     fn read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
-        const BUFFER_INCREMENT: usize = 16 * (2 << 10);
         if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
             self.receive_buffer.resize(
                 (self.receive_buffer.len() + BUFFER_INCREMENT).min(self.max_buffer_length),
@@ -234,6 +261,9 @@ where
         }
     }
 
+    /// Processes the receive buffer, deserializing bytes into messages.
+    /// Handles various deserialization scenarios including incomplete buffers,
+    /// invalid data, and messages that need to be skipped.
     fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
             if self.inbound_messages.capacity() == self.inbound_messages.len() {
@@ -304,6 +334,9 @@ where
         Ok(false)
     }
 
+    /// Performs the actual read operation on the TcpStream.
+    /// Handles various outcomes including connection closure, successful reads,
+    /// and different types of errors (would block, interrupted, etc.).
     fn read_from_stream(&mut self) -> Result<bool, std::io::Error> {
         match self
             .stream
@@ -393,7 +426,10 @@ where
         Poll::Pending
     }
 
-    /// send buffers to the tcp stream, and recycle them if they are fully written
+    /// Send buffers to the tcp stream, and recycle them if they are fully written
+    /// Prepares outbound messages for sending by serializing them and
+    /// moving them to the write queue. Handles cases where the outbound
+    /// message channel is empty or closed.
     fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
         if self.send_buffer.is_empty() {
             return Ok(false);
