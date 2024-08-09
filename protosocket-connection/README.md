@@ -8,14 +8,7 @@
 - Customizable message types through `ConnectionBindings`
 - Efficient buffer management and flexible error handling
 
-## Overview
-
-The recommended order to read this library crate is
-
-- `types.rs`
-- `connection.rs`
-
-### Flow Diagrams
+## Flow Diagrams
 
 The `poll()` function on `connection.rs` controls the lifecycle of the entire connection. You're recommended to read individual comments on the code to understand the flow, but below is a sequence diagram to get you started:
 
