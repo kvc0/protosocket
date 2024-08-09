@@ -64,7 +64,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     /// 2. Deserialize the read bytes into Messages and store them in the inbound_messages queue.
     /// 3. Process all messages in the inbound queue using the user-provided MessageReactor.
     /// 4. Serialize messages from outbound_messages queue, up to max_queued_send_messages.
-    /// 6. Check for write readiness and send serialized messages.
+    /// 5. Check for write readiness and send serialized messages.
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.receive_buffer_slice_end < self.max_buffer_length {
             // Step 1: Check if there's space in the receive buffer and the stream is ready for reading
