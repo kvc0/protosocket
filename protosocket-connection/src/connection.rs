@@ -56,8 +56,18 @@ impl<Bindings: ConnectionBindings> Unpin for Connection<Bindings> {}
 impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     type Output = ();
 
+    /// Take a look at ConnectionBindings for the type definitions used by the Connection
+    ///
+    /// This method performs the following steps:
+    ///
+    /// 1. Check for read readiness and read into the receive_buffer (up to max_buffer_length).
+    /// 2. Deserialize the read bytes into Messages and store them in the inbound_messages queue.
+    /// 3. Process all messages in the inbound queue using the user-provided MessageReactor.
+    /// 4. Serialize messages from outbound_messages queue, up to max_queued_send_messages.
+    /// 5. Check for write readiness and send serialized messages.
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.receive_buffer_slice_end < self.max_buffer_length {
+            // Step 1: Check if there's space in the receive buffer and the stream is ready for reading
             match self.stream.poll_read_ready(context) {
                 Poll::Ready(status) => {
                     if let Err(e) = status {
@@ -66,6 +76,8 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
                     }
                     // Not looping on receive, so if I'm readable I'll just come back around
                     context.waker().wake_by_ref();
+
+                    // Step 1a: read raw bytes from the stream
                     match self.read_inbound() {
                         Ok(true) => {
                             log::info!("read connection closed");
@@ -88,6 +100,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
             log::trace!("receive buffer is full");
         }
 
+        // Step 2: Deserialize read bytes into messages
         match self.read_inbound_messages_into_read_queue() {
             Ok(true) => {
                 log::info!("read queue closed");
@@ -102,6 +115,8 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
             }
         }
         {
+            // Create a new scope to allow for for fine-grained borrowing of Self.
+            // Step 3: Process inbound messages with the Connection's MessageReactor
             let Self {
                 reactor,
                 inbound_messages,
@@ -114,10 +129,13 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
             }
         }
 
+        // Step 4: Prepare outbound messages for sending. We serialize the outbound bytes here as per the
+        // Connection's serializer
         if let Poll::Ready(early_out) = self.poll_serialize_outbound_messages(context) {
             return Poll::Ready(early_out);
         }
 
+        // Step 5: Send outbound messages if the stream is ready for writing
         if !self.send_buffer.is_empty() {
             match self.stream.poll_write_ready(context) {
                 Poll::Ready(status) => {
@@ -126,6 +144,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
                         return Poll::Ready(());
                     }
 
+                    // Step 5a: write raw bytes to the stream
                     match self.writev_buffers() {
                         Ok(true) => {
                             log::info!("write connection closed");
@@ -234,6 +253,10 @@ where
         }
     }
 
+    /// process the receive buffer, deserializing bytes into messages
+    /// * Ok(false) if deserialization worked and the connection is still open (happy case).
+    /// * Ok(true) if the was a fatal deserialization error and the connection should close.
+    /// * Err if there was an io error (probably fatal to the connection)
     fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
         while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
             if self.inbound_messages.capacity() == self.inbound_messages.len() {
@@ -304,6 +327,10 @@ where
         Ok(false)
     }
 
+    /// read from the TcpStream
+    /// * Ok(false) if the read worked and the socket is still open (happy case).
+    /// * Ok(true) if the read side of the socket is closed.
+    /// * Err if there was an io error (probably fatal to the connection)
     fn read_from_stream(&mut self) -> Result<bool, std::io::Error> {
         match self
             .stream
@@ -393,7 +420,7 @@ where
         Poll::Pending
     }
 
-    /// send buffers to the tcp stream, and recycle them if they are fully written
+    /// Send buffers to the tcp stream, and recycle them if they are fully written
     fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
         if self.send_buffer.is_empty() {
             return Ok(false);
