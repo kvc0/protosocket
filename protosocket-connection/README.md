@@ -1,9 +1,10 @@
 # protosocket-connection
 
-`protosocket-connection` is a Rust library crate that provides a flexible, asynchronous TCP connection handler. It's designed to efficiently manage bidirectional, message-oriented TCP streams with customizable serialization and deserialization.
+`protosocket-connection` provides a flexible, asynchronous TCP connection handler. It's designed to efficiently manage bidirectional, message-oriented TCP streams with customizable serialization and deserialization.
 
 ## Key Features
-- Asynchronous I/O using Tokio
+- Low abstraction - no http or higher level constructs
+- Asynchronous I/O using `mio` via `tokio`
 - Customizable message types through `ConnectionBindings`
 - Efficient buffer management and flexible error handling
 
