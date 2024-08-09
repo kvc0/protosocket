@@ -57,7 +57,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     type Output = ();
 
     /// Take a look at ConnectionBindings for the type definitions used by the Connection
-    /// 
+    ///
     /// This method performs the following steps:
     ///
     /// 1. Check for read readiness and read into the receive_buffer (up to max_buffer_length).
