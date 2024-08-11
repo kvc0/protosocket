@@ -44,10 +44,11 @@ impl<Bindings: ConnectionBindings> std::fmt::Display for Connection<Bindings> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let read_start = self.receive_buffer_start_offset;
         let read_end = self.receive_buffer_slice_end;
+        let read_capacity = self.receive_buffer.len();
         let write_queue = self.send_buffer.len();
         let write_length: usize = self.send_buffer.iter().map(|b| b.len()).sum();
         let address = self.address;
-        write!(f, "Connection: {address} {{read{{start: {read_start}, end: {read_end}}}, write{{queue: {write_queue}, length: {write_length}}}}}")
+        write!(f, "Connection: {address} {{read{{start: {read_start}, end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}}}}")
     }
 }
 
@@ -74,19 +75,25 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
                         log::error!("error while polling read readiness: {e:?}");
                         return Poll::Ready(());
                     }
-                    // Not looping on receive, so if I'm readable I'll just come back around
+                    // Not looping on receive, so if I'm readable I'll just come back around.
+                    // poll_read_ready owns the wake state for the read half of the stream.
                     context.waker().wake_by_ref();
 
                     // Step 1a: read raw bytes from the stream
                     match self.read_inbound() {
-                        Ok(true) => {
+                        ReadBufferState::WaitingForMore => {
+                            log::debug!(
+                                "consumed all that I can from the read stream for now {self}"
+                            );
+                        }
+                        ReadBufferState::PartiallyConsumed => {
+                            log::debug!("more to read");
+                        }
+                        ReadBufferState::Disconnected => {
                             log::info!("read connection closed");
                             return Poll::Ready(());
                         }
-                        Ok(false) => {
-                            log::trace!("read connection is still open");
-                        }
-                        Err(e) => {
+                        ReadBufferState::Error(e) => {
                             log::warn!("error while reading from tcp stream: {e:?}");
                             return Poll::Ready(());
                         }
@@ -102,14 +109,18 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
 
         // Step 2: Deserialize read bytes into messages
         match self.read_inbound_messages_into_read_queue() {
-            Ok(true) => {
+            ReadBufferState::WaitingForMore => {
+                log::trace!("read queue is still open");
+            }
+            ReadBufferState::PartiallyConsumed => {
+                log::trace!("read buffer partially consumed for responsiveness {self}");
+                context.waker().wake_by_ref();
+            }
+            ReadBufferState::Disconnected => {
                 log::info!("read queue closed");
                 return Poll::Ready(());
             }
-            Ok(false) => {
-                log::trace!("read queue is still open");
-            }
-            Err(e) => {
+            ReadBufferState::Error(e) => {
                 log::warn!("error while reading from buffer: {e:?}");
                 return Poll::Ready(());
             }
@@ -137,6 +148,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
 
         // Step 5: Send outbound messages if the stream is ready for writing
         if !self.send_buffer.is_empty() {
+            // the write half of the stream is only considered for readiness when there is something to write.
             match self.stream.poll_write_ready(context) {
                 Poll::Ready(status) => {
                     if let Err(e) = status {
@@ -145,13 +157,14 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
                     }
 
                     // Step 5a: write raw bytes to the stream
+                    log::debug!("writing {self}");
                     match self.writev_buffers() {
                         Ok(true) => {
                             log::info!("write connection closed");
                             return Poll::Ready(());
                         }
                         Ok(false) => {
-                            log::trace!("write connection is still open");
+                            log::debug!("wrote {self}");
                         }
                         Err(e) => {
                             log::warn!("error while writing to tcp stream: {e:?}");
@@ -159,7 +172,7 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
                         }
                     }
 
-                    if !self.outbound_message_buffer.is_empty() {
+                    if !self.send_buffer.is_empty() {
                         // not looping on send, so if I still have stuff to send I'll come back around
                         context.waker().wake_by_ref();
                     }
@@ -178,6 +191,18 @@ impl<Lifecycle: ConnectionBindings> Drop for Connection<Lifecycle> {
     fn drop(&mut self) {
         log::debug!("connection dropped")
     }
+}
+
+#[derive(Debug)]
+enum ReadBufferState {
+    /// Done consuming until external liveness is signaled
+    WaitingForMore,
+    /// Need to eagerly wake up again
+    PartiallyConsumed,
+    /// Connection is disconnected or is to be disconnected
+    Disconnected,
+    /// Disconnected with an io error
+    Error(std::io::Error),
 }
 
 impl<Bindings: ConnectionBindings> Connection<Bindings>
@@ -219,10 +244,8 @@ where
         }
     }
 
-    /// Ok(true) when the remote end closed the connection
-    /// Ok(false) when it's done and the remote is not closed
-    /// Err should probably be fatal
-    fn read_inbound(&mut self) -> std::result::Result<bool, std::io::Error> {
+    /// ensure buffer state and read from the inbound stream
+    fn read_inbound(&mut self) -> ReadBufferState {
         const BUFFER_INCREMENT: usize = 16 * (2 << 10);
         if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
             self.receive_buffer.resize(
@@ -233,36 +256,23 @@ where
 
         if 0 < self.receive_buffer.len() - self.receive_buffer_slice_end {
             // We can (maybe) read from the connection.
-            match self.read_from_stream() {
-                Ok(closed) => {
-                    if closed {
-                        log::info!("read connection closed");
-                        Ok(true)
-                    } else {
-                        Ok(false)
-                    }
-                }
-                Err(e) => {
-                    log::trace!("io error during read: {e:?}");
-                    Err(e)
-                }
-            }
+            self.read_from_stream()
         } else {
             log::debug!("receive is full {self}");
-            Ok(false)
+            ReadBufferState::WaitingForMore
         }
     }
 
     /// process the receive buffer, deserializing bytes into messages
-    /// * Ok(false) if deserialization worked and the connection is still open (happy case).
-    /// * Ok(true) if the was a fatal deserialization error and the connection should close.
-    /// * Err if there was an io error (probably fatal to the connection)
-    fn read_inbound_messages_into_read_queue(&mut self) -> Result<bool, std::io::Error> {
-        while self.receive_buffer_start_offset < self.receive_buffer_slice_end {
+    fn read_inbound_messages_into_read_queue(&mut self) -> ReadBufferState {
+        let state = loop {
+            if self.receive_buffer_start_offset == self.receive_buffer_slice_end {
+                break ReadBufferState::WaitingForMore;
+            }
             if self.inbound_messages.capacity() == self.inbound_messages.len() {
                 // can't accept any more inbound messages right now
-                log::debug!("inbound message queue is draining too slowly");
-                break;
+                log::debug!("full batch of messages read from the socket");
+                break ReadBufferState::PartiallyConsumed;
             }
 
             let buffer = &self.receive_buffer
@@ -276,7 +286,7 @@ where
                     DeserializeError::IncompleteBuffer { next_message_size } => {
                         if self.max_buffer_length < next_message_size {
                             log::error!("tried to receive message that is too long. Resetting connection - max: {}, requested: {}", self.max_buffer_length, next_message_size);
-                            return Ok(true);
+                            return ReadBufferState::Disconnected;
                         }
                         if self.max_buffer_length
                             < self.receive_buffer_slice_end + next_message_size
@@ -298,40 +308,37 @@ where
                             self.receive_buffer_slice_end = length;
                         }
                         log::debug!("waiting for the next message of length {next_message_size}");
-                        break;
+                        break ReadBufferState::WaitingForMore;
                     }
                     DeserializeError::InvalidBuffer => {
                         log::error!("message was invalid - broken stream");
-                        return Ok(true);
+                        return ReadBufferState::Disconnected;
                     }
                     DeserializeError::SkipMessage { distance } => {
                         if self.receive_buffer_slice_end - self.receive_buffer_start_offset
                             < distance
                         {
                             log::trace!("cannot skip yet, need to read more. Skipping: {distance}, remaining:{}", self.receive_buffer_slice_end - self.receive_buffer_start_offset);
-                            break;
+                            break ReadBufferState::WaitingForMore;
                         }
                         log::debug!("skipping message of length {distance}");
                         self.receive_buffer_start_offset += distance;
                     }
                 },
             }
-        }
+        };
         if self.receive_buffer_start_offset == self.receive_buffer_slice_end
             && self.receive_buffer_start_offset != 0
         {
-            log::debug!("read buffer complete - resetting");
+            log::debug!("read buffer complete - resetting: {self}");
             self.receive_buffer_start_offset = 0;
             self.receive_buffer_slice_end = 0;
         }
-        Ok(false)
+        state
     }
 
     /// read from the TcpStream
-    /// * Ok(false) if the read worked and the socket is still open (happy case).
-    /// * Ok(true) if the read side of the socket is closed.
-    /// * Err if there was an io error (probably fatal to the connection)
-    fn read_from_stream(&mut self) -> Result<bool, std::io::Error> {
+    fn read_from_stream(&mut self) -> ReadBufferState {
         match self
             .stream
             .try_read(&mut self.receive_buffer[self.receive_buffer_slice_end..])
@@ -341,26 +348,28 @@ where
                     "connection was shut down as recv returned 0. Requested {}",
                     self.receive_buffer.len() - self.receive_buffer_slice_end
                 );
-                return Ok(true);
+                ReadBufferState::Disconnected
             }
             Ok(bytes_read) => {
                 self.receive_buffer_slice_end += bytes_read;
+                ReadBufferState::PartiallyConsumed
             }
             // Would block "errors" are the OS's way of saying that the
             // connection is not actually ready to perform this I/O operation.
             Err(ref err) if would_block(err) => {
                 log::trace!("read everything. No longer readable");
+                ReadBufferState::WaitingForMore
             }
             Err(ref err) if interrupted(err) => {
                 log::trace!("interrupted, so try again later");
+                ReadBufferState::PartiallyConsumed
             }
             // Other errors we'll consider fatal.
             Err(err) => {
                 log::warn!("error while reading from tcp stream. buffer length: {}b, offset: {}, offered length {}b, err: {err:?}", self.receive_buffer.len(), self.receive_buffer_slice_end, self.receive_buffer.len() - self.receive_buffer_slice_end);
-                return Err(err);
+                ReadBufferState::Error(err)
             }
         }
-        Ok(false)
     }
 
     fn room_in_send_buffer(&self) -> usize {
@@ -422,10 +431,6 @@ where
 
     /// Send buffers to the tcp stream, and recycle them if they are fully written
     fn writev_buffers(&mut self) -> std::result::Result<bool, std::io::Error> {
-        if self.send_buffer.is_empty() {
-            return Ok(false);
-        }
-
         /// I need to figure out how to get this from the os rather than hardcoding. 16 is the lowest I've seen mention of,
         /// and I've seen 1024 more commonly.
         const UIO_MAXIOV: usize = 128;

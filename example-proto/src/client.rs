@@ -30,13 +30,13 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let mut registry = protosocket_prost::ClientRegistry::new(tokio::runtime::Handle::current());
-    registry.set_max_read_buffer_length(16 * 1024);
+    registry.set_max_read_buffer_length(2 * (2 << 20));
 
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     for _i in 0..2 {
-        let concurrent_count = Arc::new(Semaphore::new(128));
+        let concurrent_count = Arc::new(Semaphore::new(256));
         let concurrent = Arc::new(Mutex::new(HashMap::with_capacity(
             concurrent_count.available_permits(),
         )));
@@ -67,26 +67,23 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
             let hz = (total as f64) / start.elapsed().as_secs_f64().max(0.1);
 
             let latency = latency.drain();
-            let p90 = *latency
+            let p90 = latency
                 .percentile(0.9)
                 .unwrap_or_default()
-                .expect("come on")
-                .range()
-                .end() as f64
+                .map(|b| *b.range().end())
+                .unwrap_or_default() as f64
                 / 1000.0;
-            let p999 = *latency
+            let p999 = latency
                 .percentile(0.999)
                 .unwrap_or_default()
-                .expect("come on")
-                .range()
-                .end() as f64
+                .map(|b| *b.range().end())
+                .unwrap_or_default() as f64
                 / 1000.0;
-            let p9999 = *latency
+            let p9999 = latency
                 .percentile(0.9999)
                 .unwrap_or_default()
-                .expect("come on")
-                .range()
-                .end() as f64
+                .map(|b| *b.range().end())
+                .unwrap_or_default() as f64
                 / 1000.0;
             eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs");
         }

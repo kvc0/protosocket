@@ -52,7 +52,7 @@ impl ServerConnector for ServerContext {
     ) -> <Self::Bindings as ConnectionBindings>::Reactor {
         ProtoReflexReactor {
             outbound: optional_outbound,
-            concurrent_requests: Arc::new(Semaphore::new(1024)),
+            concurrent_requests: Arc::new(Semaphore::new(8192)),
         }
     }
 }
