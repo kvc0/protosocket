@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    tokio::spawn(server).await.expect("listener completes");
+    tokio::spawn(server).await??;
     Ok(())
 }
 

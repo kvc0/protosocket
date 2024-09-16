@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    tokio::spawn(server).await.expect("service must serve");
+    tokio::spawn(server).await??;
     Ok(())
 }
 
