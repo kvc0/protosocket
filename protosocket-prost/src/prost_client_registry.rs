@@ -49,6 +49,7 @@ impl ClientRegistry {
         let stream = TcpStream::connect(address)
             .await
             .map_err(std::sync::Arc::new)?;
+        stream.set_nodelay(true).map_err(std::sync::Arc::new)?;
         let (outbound, outbound_messages) = mpsc::channel(self.max_queued_outbound_messages);
         let connection =
             Connection::<ProstClientConnectionBindings<Request, Response, Reactor>>::new(
