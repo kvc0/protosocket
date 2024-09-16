@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::Error;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -88,13 +89,14 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
 }
 
 impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
-    type Output = ();
+    type Output = Result<(), Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             break match self.listener.poll_accept(context) {
                 Poll::Ready(result) => match result {
                     Ok((stream, address)) => {
+                        stream.set_nodelay(true)?;
                         let (outbound_submission_queue, outbound_messages) =
                             mpsc::channel(self.max_queued_outbound_messages);
                         let reactor = self
