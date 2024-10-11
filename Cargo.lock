@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bytes",
  "futures",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-prost"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bytes",
  "log",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-server"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bytes",
  "futures",
