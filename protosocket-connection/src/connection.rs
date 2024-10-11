@@ -67,77 +67,19 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     /// 4. Serialize messages from outbound_messages queue, up to max_queued_send_messages.
     /// 5. Check for write readiness and send serialized messages.
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.receive_buffer_slice_end < self.max_buffer_length {
-            // Step 1: Check if there's space in the receive buffer and the stream is ready for reading
-            match self.stream.poll_read_ready(context) {
-                Poll::Ready(status) => {
-                    if let Err(e) = status {
-                        log::error!("error while polling read readiness: {e:?}");
-                        return Poll::Ready(());
-                    }
-                    // Not looping on receive, so if I'm readable I'll just come back around.
-                    // poll_read_ready owns the wake state for the read half of the stream.
-                    context.waker().wake_by_ref();
-
-                    // Step 1a: read raw bytes from the stream
-                    match self.read_inbound() {
-                        ReadBufferState::WaitingForMore => {
-                            log::debug!(
-                                "consumed all that I can from the read stream for now {self}"
-                            );
-                        }
-                        ReadBufferState::PartiallyConsumed => {
-                            log::debug!("more to read");
-                        }
-                        ReadBufferState::Disconnected => {
-                            log::info!("read connection closed");
-                            return Poll::Ready(());
-                        }
-                        ReadBufferState::Error(e) => {
-                            log::warn!("error while reading from tcp stream: {e:?}");
-                            return Poll::Ready(());
-                        }
-                    }
-                }
-                Poll::Pending => {
-                    log::trace!("read side is up to date");
-                }
-            }
-        } else {
-            log::trace!("receive buffer is full");
+        // Step 1: Check if there's space in the receive buffer and the stream is ready for reading
+        if let Some(early_out) = self.as_mut().poll_receive(context) {
+            return early_out;
         }
 
         // Step 2: Deserialize read bytes into messages
-        match self.read_inbound_messages_into_read_queue() {
-            ReadBufferState::WaitingForMore => {
-                log::trace!("read queue is still open");
-            }
-            ReadBufferState::PartiallyConsumed => {
-                log::trace!("read buffer partially consumed for responsiveness {self}");
-                context.waker().wake_by_ref();
-            }
-            ReadBufferState::Disconnected => {
-                log::info!("read queue closed");
-                return Poll::Ready(());
-            }
-            ReadBufferState::Error(e) => {
-                log::warn!("error while reading from buffer: {e:?}");
-                return Poll::Ready(());
-            }
+        if let Some(early_out) = self.as_mut().poll_deserialize(context) {
+            return early_out;
         }
-        {
-            // Create a new scope to allow for for fine-grained borrowing of Self.
-            // Step 3: Process inbound messages with the Connection's MessageReactor
-            let Self {
-                reactor,
-                inbound_messages,
-                ..
-            } = &mut *self;
-            if reactor.on_inbound_messages(inbound_messages.drain(..)) == ReactorStatus::Disconnect
-            {
-                log::debug!("reactor requested disconnect");
-                return Poll::Ready(());
-            }
+
+        // Step 3: Process inbound messages with the Connection's MessageReactor
+        if let Some(early_out) = self.poll_react() {
+            return early_out;
         }
 
         // Step 4: Prepare outbound messages for sending. We serialize the outbound bytes here as per the
@@ -147,40 +89,8 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
         }
 
         // Step 5: Send outbound messages if the stream is ready for writing
-        if !self.send_buffer.is_empty() {
-            // the write half of the stream is only considered for readiness when there is something to write.
-            match self.stream.poll_write_ready(context) {
-                Poll::Ready(status) => {
-                    if let Err(e) = status {
-                        log::error!("error while polling write readiness: {e:?}");
-                        return Poll::Ready(());
-                    }
-
-                    // Step 5a: write raw bytes to the stream
-                    log::debug!("writing {self}");
-                    match self.writev_buffers() {
-                        Ok(true) => {
-                            log::info!("write connection closed");
-                            return Poll::Ready(());
-                        }
-                        Ok(false) => {
-                            log::debug!("wrote {self}");
-                        }
-                        Err(e) => {
-                            log::warn!("error while writing to tcp stream: {e:?}");
-                            return Poll::Ready(());
-                        }
-                    }
-
-                    if !self.send_buffer.is_empty() {
-                        // not looping on send, so if I still have stuff to send I'll come back around
-                        context.waker().wake_by_ref();
-                    }
-                }
-                Poll::Pending => {
-                    log::trace!("write side is too slow");
-                }
-            }
+        if let Some(early_out) = self.poll_outbound(context) {
+            return early_out;
         }
 
         Poll::Pending
@@ -246,12 +156,19 @@ where
 
     /// ensure buffer state and read from the inbound stream
     fn read_inbound(&mut self) -> ReadBufferState {
-        const BUFFER_INCREMENT: usize = 16 * (2 << 10);
-        if self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT {
-            self.receive_buffer.resize(
-                (self.receive_buffer.len() + BUFFER_INCREMENT).min(self.max_buffer_length),
-                0,
-            );
+        const BUFFER_INCREMENT: usize = 2 << 20;
+        if self.receive_buffer.len() < self.max_buffer_length
+            && self.receive_buffer.len() - self.receive_buffer_slice_end < BUFFER_INCREMENT
+        {
+            self.receive_buffer.reserve(BUFFER_INCREMENT);
+            // SAFETY: This is a buffer, and u8 is not read until after the read syscall returns. Read initializes the buffer values.
+            //         I reserved the additional space above, so the additional space is valid.
+            // This was done because resizing the buffer shows up on heat maps.
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                self.receive_buffer
+                    .set_len(self.receive_buffer.len() + BUFFER_INCREMENT)
+            };
         }
 
         if 0 < self.receive_buffer.len() - self.receive_buffer_slice_end {
@@ -501,5 +418,120 @@ where
                 break;
             }
         }
+    }
+
+    fn poll_receive(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Option<Poll<()>> {
+        if self.receive_buffer_slice_end < self.max_buffer_length {
+            match self.stream.poll_read_ready(context) {
+                Poll::Ready(status) => {
+                    if let Err(e) = status {
+                        log::error!("error while polling read readiness: {e:?}");
+                        return Some(Poll::Ready(()));
+                    }
+                    // Not looping on receive, so if I'm readable I'll just come back around.
+                    // poll_read_ready owns the wake state for the read half of the stream.
+                    context.waker().wake_by_ref();
+
+                    // Step 1a: read raw bytes from the stream
+                    match self.read_inbound() {
+                        ReadBufferState::WaitingForMore => {
+                            log::debug!(
+                                "consumed all that I can from the read stream for now {self}"
+                            );
+                        }
+                        ReadBufferState::PartiallyConsumed => {
+                            log::debug!("more to read");
+                        }
+                        ReadBufferState::Disconnected => {
+                            log::info!("read connection closed");
+                            return Some(Poll::Ready(()));
+                        }
+                        ReadBufferState::Error(e) => {
+                            log::warn!("error while reading from tcp stream: {e:?}");
+                            return Some(Poll::Ready(()));
+                        }
+                    }
+                }
+                Poll::Pending => {
+                    log::trace!("read side is up to date");
+                }
+            }
+        } else {
+            log::trace!("receive buffer is full");
+        }
+        None
+    }
+
+    fn poll_deserialize(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Option<Poll<()>> {
+        match self.read_inbound_messages_into_read_queue() {
+            ReadBufferState::WaitingForMore => {
+                log::trace!("read queue is still open");
+            }
+            ReadBufferState::PartiallyConsumed => {
+                log::trace!("read buffer partially consumed for responsiveness {self}");
+                context.waker().wake_by_ref();
+            }
+            ReadBufferState::Disconnected => {
+                log::info!("read queue closed");
+                return Some(Poll::Ready(()));
+            }
+            ReadBufferState::Error(e) => {
+                log::warn!("error while reading from buffer: {e:?}");
+                return Some(Poll::Ready(()));
+            }
+        }
+        None
+    }
+
+    fn poll_react(&mut self) -> Option<Poll<()>> {
+        let Self {
+            reactor,
+            inbound_messages,
+            ..
+        } = &mut *self;
+        if reactor.on_inbound_messages(inbound_messages.drain(..)) == ReactorStatus::Disconnect {
+            log::debug!("reactor requested disconnect");
+            return Some(Poll::Ready(()));
+        }
+        None
+    }
+
+    fn poll_outbound(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Option<Poll<()>> {
+        if !self.send_buffer.is_empty() {
+            // the write half of the stream is only considered for readiness when there is something to write.
+            match self.stream.poll_write_ready(context) {
+                Poll::Ready(status) => {
+                    if let Err(e) = status {
+                        log::error!("error while polling write readiness: {e:?}");
+                        return Some(Poll::Ready(()));
+                    }
+
+                    // Step 5a: write raw bytes to the stream
+                    log::debug!("writing {self}");
+                    match self.writev_buffers() {
+                        Ok(true) => {
+                            log::info!("write connection closed");
+                            return Some(Poll::Ready(()));
+                        }
+                        Ok(false) => {
+                            log::debug!("wrote {self}");
+                        }
+                        Err(e) => {
+                            log::warn!("error while writing to tcp stream: {e:?}");
+                            return Some(Poll::Ready(()));
+                        }
+                    }
+
+                    if !self.send_buffer.is_empty() {
+                        // not looping on send, so if I still have stuff to send I'll come back around
+                        context.waker().wake_by_ref();
+                    }
+                }
+                Poll::Pending => {
+                    log::trace!("write side is too slow");
+                }
+            }
+        }
+        None
     }
 }
