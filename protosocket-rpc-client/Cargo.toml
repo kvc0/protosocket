@@ -1,0 +1,20 @@
+[package]
+name = "protosocket-rpc-client"
+description = "RPC client using protosockets"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+protosocket             = { workspace = true }
+
+futures                 = { workspace = true }
+k-lock                  = { workspace = true }
+log                     = { workspace = true }
+tokio                   = { workspace = true }
+thiserror               = { workspace = true }

@@ -5,16 +5,16 @@ use protosocket::{DeserializeError, Deserializer, Serializer};
 /// A stateless implementation of protosocket's `Serializer` and `Deserializer`
 /// traits using `prost` for encoding and decoding protocol buffers messages.
 #[derive(Default, Debug)]
-pub struct ProstSerializer<Request, Response> {
-    pub(crate) _phantom: PhantomData<(Request, Response)>,
+pub struct ProstSerializer<Deserialized, Serialized> {
+    pub(crate) _phantom: PhantomData<(Deserialized, Serialized)>,
 }
 
-impl<Request, Response> Serializer for ProstSerializer<Request, Response>
+impl<Deserialized, Serialized> Serializer for ProstSerializer<Deserialized, Serialized>
 where
-    Request: prost::Message + Default + Unpin,
-    Response: prost::Message + Unpin,
+    Deserialized: prost::Message + Default + Unpin,
+    Serialized: prost::Message + Unpin,
 {
-    type Message = Response;
+    type Message = Serialized;
 
     fn encode(&mut self, message: Self::Message, buffer: &mut impl bytes::BufMut) {
         match message.encode_length_delimited(buffer) {
@@ -27,12 +27,12 @@ where
         }
     }
 }
-impl<Request, Response> Deserializer for ProstSerializer<Request, Response>
+impl<Deserialized, Serialized> Deserializer for ProstSerializer<Deserialized, Serialized>
 where
-    Request: prost::Message + Default + Unpin,
-    Response: prost::Message + Unpin,
+    Deserialized: prost::Message + Default + Unpin,
+    Serialized: prost::Message + Unpin,
 {
-    type Message = Request;
+    type Message = Deserialized;
 
     fn decode(
         &mut self,

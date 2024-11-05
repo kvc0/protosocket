@@ -15,6 +15,7 @@ path = "src/client.rs"
 [dependencies]
 protosocket             = { workspace = true }
 protosocket-prost       = { workspace = true }
+protosocket-rpc-client  = { workspace = true }
 protosocket-server      = { workspace = true }
 
 bytes                   = { workspace = true }

@@ -1,12 +1,11 @@
 use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicUsize, Arc, Mutex},
+    sync::{atomic::AtomicUsize, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use messages::{EchoRequest, Request, Response};
-use protosocket::{MessageReactor, ReactorStatus};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use protosocket_rpc_client::RpcClient;
+use tokio::sync::Semaphore;
 
 mod messages;
 
@@ -29,65 +28,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let mut registry = protosocket_prost::ClientRegistry::new(tokio::runtime::Handle::current());
-    registry.set_max_read_buffer_length(2 * (2 << 20));
-
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     for _i in 0..2 {
         let concurrent_count = Arc::new(Semaphore::new(256));
-        let concurrent = Arc::new(Mutex::new(HashMap::with_capacity(
-            concurrent_count.available_permits(),
-        )));
-        let outbound = registry
-            .register_client::<Request, Response, ProtoCompletionReactor>(
-                std::env::var("ENDPOINT").unwrap_or_else(|_| "127.0.0.1:9000".to_string()),
-                ProtoCompletionReactor {
-                    count: response_count.clone(),
-                    latency: latency.clone(),
-                    concurrent: concurrent.clone(),
-                    concurrent_wip: Default::default(),
-                },
-            )
-            .await?;
-        let _client_runtime = tokio::spawn(run_message_generator(
+
+        let (client, connection) = protosocket_rpc_client::connect::<
+            protosocket_prost::ProstSerializer<Response, Request>,
+            protosocket_prost::ProstSerializer<Response, Request>,
+        >(
+            std::env::var("ENDPOINT")
+                .unwrap_or_else(|_| "127.0.0.1:9000".to_string())
+                .parse()
+                .expect("must use a valid socket address"),
+            &Default::default(),
+        )
+        .await?;
+        let _connection_handle = tokio::spawn(connection);
+        let _client_handle = tokio::spawn(generate_traffic(
             concurrent_count,
-            concurrent.clone(),
-            outbound,
+            client,
+            response_count.clone(),
+            latency.clone(),
         ));
     }
 
-    let metrics = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            let start = Instant::now();
-            interval.tick().await;
-            let total = response_count.swap(0, std::sync::atomic::Ordering::Relaxed);
-            let hz = (total as f64) / start.elapsed().as_secs_f64().max(0.1);
-
-            let latency = latency.drain();
-            let p90 = latency
-                .percentile(0.9)
-                .unwrap_or_default()
-                .map(|b| *b.range().end())
-                .unwrap_or_default() as f64
-                / 1000.0;
-            let p999 = latency
-                .percentile(0.999)
-                .unwrap_or_default()
-                .map(|b| *b.range().end())
-                .unwrap_or_default() as f64
-                / 1000.0;
-            let p9999 = latency
-                .percentile(0.9999)
-                .unwrap_or_default()
-                .map(|b| *b.range().end())
-                .unwrap_or_default() as f64
-                / 1000.0;
-            eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs");
-        }
-    });
+    let metrics = tokio::spawn(print_periodic_metrics(response_count, latency));
 
     tokio::select!(
         // _ = connection_driver => {
@@ -104,61 +71,47 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-struct ProtoCompletionReactor {
-    count: Arc<AtomicUsize>,
+async fn print_periodic_metrics(
+    response_count: Arc<AtomicUsize>,
     latency: Arc<histogram::AtomicHistogram>,
-    concurrent: Arc<Mutex<HashMap<u64, OwnedSemaphorePermit>>>,
-    concurrent_wip: HashMap<u64, OwnedSemaphorePermit>,
-}
-impl MessageReactor for ProtoCompletionReactor {
-    type Inbound = Response;
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        let start = Instant::now();
+        interval.tick().await;
+        let total = response_count.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let hz = (total as f64) / start.elapsed().as_secs_f64().max(0.1);
 
-    fn on_inbound_messages(
-        &mut self,
-        messages: impl IntoIterator<Item = Self::Inbound>,
-    ) -> ReactorStatus {
-        log::debug!("received message response batch");
-        // make sure you hold the concurrent lock as briefly as possible.
-        // the permits will be released and the threads will race to lock
-        // otherwise. This could also be triple-buffered so the lock is
-        // only the duration of a pointer swap.
-        self.concurrent_wip
-            .extend(self.concurrent.lock().expect("mutex works").drain());
-        for response in messages.into_iter() {
-            drop(
-                self.concurrent_wip
-                    .remove(&response.request_id)
-                    .expect("must not receive messages that have not been sent"),
-            );
-            let latency = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time works")
-                .as_nanos() as u64
-                - response.body.as_ref().expect("must have a body").nanotime;
-            let _ = self.latency.increment(latency);
-            assert_eq!(
-                response.request_id,
-                response
-                    .body
-                    .unwrap_or_default()
-                    .message
-                    .parse()
-                    .unwrap_or_default()
-            );
-            assert_ne!(response.request_id, 0, "received bad message");
-            self.count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        ReactorStatus::Continue
+        let latency = latency.drain();
+        let p90 = latency
+            .percentile(0.9)
+            .unwrap_or_default()
+            .map(|b| *b.range().end())
+            .unwrap_or_default() as f64
+            / 1000.0;
+        let p999 = latency
+            .percentile(0.999)
+            .unwrap_or_default()
+            .map(|b| *b.range().end())
+            .unwrap_or_default() as f64
+            / 1000.0;
+        let p9999 = latency
+            .percentile(0.9999)
+            .unwrap_or_default()
+            .map(|b| *b.range().end())
+            .unwrap_or_default() as f64
+            / 1000.0;
+        eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs");
     }
 }
 
-async fn run_message_generator(
+async fn generate_traffic(
     concurrent_count: Arc<Semaphore>,
-    concurrent: Arc<Mutex<HashMap<u64, OwnedSemaphorePermit>>>,
-    outbound: tokio::sync::mpsc::Sender<Request>,
+    client: RpcClient<Request, Response>,
+    metrics_count: Arc<AtomicUsize>,
+    metrics_latency: Arc<histogram::AtomicHistogram>,
 ) {
-    log::debug!("running producer");
+    log::debug!("running traffic generator");
     let mut i = 1;
     loop {
         let permit = concurrent_count
@@ -166,9 +119,8 @@ async fn run_message_generator(
             .acquire_owned()
             .await
             .expect("semaphore works");
-        concurrent.lock().expect("mutex works").insert(i, permit);
-        match outbound
-            .send(Request {
+        match client
+            .send_unary(Request {
                 request_id: i,
                 body: Some(EchoRequest {
                     message: i.to_string(),
@@ -180,8 +132,15 @@ async fn run_message_generator(
             })
             .await
         {
-            Ok(_) => {
+            Ok(completion) => {
                 i += 1;
+                let metrics_count = metrics_count.clone();
+                let metrics_latency = metrics_latency.clone();
+                tokio::spawn(async move {
+                    let response = completion.await.expect("response must be successful");
+                    handle_response(response, metrics_count, metrics_latency);
+                    drop(permit);
+                });
             }
             Err(e) => {
                 log::error!("send should work: {e:?}");
@@ -189,4 +148,28 @@ async fn run_message_generator(
             }
         }
     }
+}
+
+fn handle_response(
+    response: Response,
+    metrics_count: Arc<AtomicUsize>,
+    metrics_latency: Arc<histogram::AtomicHistogram>,
+) {
+    let latency = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time works")
+        .as_nanos() as u64
+        - response.body.as_ref().expect("must have a body").nanotime;
+    let _ = metrics_latency.increment(latency);
+    assert_eq!(
+        response.request_id,
+        response
+            .body
+            .unwrap_or_default()
+            .message
+            .parse()
+            .unwrap_or_default()
+    );
+    assert_ne!(response.request_id, 0, "received bad message");
+    metrics_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
