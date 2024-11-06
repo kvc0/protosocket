@@ -6,12 +6,12 @@ use std::{
 use k_lock::Mutex;
 use tokio::sync::mpsc;
 
-use crate::{
+use crate::reactor::{
     completion_reactor::{Completion, RpcCompletionReactor},
     completion_streaming::StreamingCompletion,
     completion_unary::UnaryCompletion,
-    Message,
 };
+use crate::Message;
 
 /// A client for sending RPCs to a protosockets rpc server.
 ///

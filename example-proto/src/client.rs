@@ -4,7 +4,7 @@ use std::{
 };
 
 use messages::{EchoRequest, Request, Response};
-use protosocket_rpc_client::RpcClient;
+use protosocket_rpc::RpcClient;
 use tokio::sync::Semaphore;
 
 mod messages;
@@ -34,7 +34,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     for _i in 0..2 {
         let concurrent_count = Arc::new(Semaphore::new(256));
 
-        let (client, connection) = protosocket_rpc_client::connect::<
+        let (client, connection) = protosocket_rpc::connect::<
             protosocket_prost::ProstSerializer<Response, Request>,
             protosocket_prost::ProstSerializer<Response, Request>,
         >(

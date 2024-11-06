@@ -1,4 +1,4 @@
-use protosocket_rpc_client::ProtosocketControlCode;
+use protosocket_rpc::ProtosocketControlCode;
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]
 pub struct Request {
@@ -32,7 +32,7 @@ pub struct EchoResponse {
     pub nanotime: u64,
 }
 
-impl protosocket_rpc_client::Message for Request {
+impl protosocket_rpc::Message for Request {
     fn message_id(&self) -> u64 {
         self.request_id
     }
@@ -53,7 +53,7 @@ impl protosocket_rpc_client::Message for Request {
     }
 }
 
-impl protosocket_rpc_client::Message for Response {
+impl protosocket_rpc::Message for Response {
     fn message_id(&self) -> u64 {
         self.request_id
     }

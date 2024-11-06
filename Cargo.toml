@@ -6,7 +6,7 @@ members = [
     "example-telnet",
     "protosocket-connection",
     "protosocket-prost",
-    "protosocket-rpc-client",
+    "protosocket-rpc",
     "protosocket-server",
 ]
 
@@ -24,7 +24,7 @@ categories = ["web-programming"]
 
 [workspace.dependencies]
 protosocket             = { path = "protosocket-connection", version = "0" }
-protosocket-rpc-client  = { path = "protosocket-rpc-client" }
+protosocket-rpc         = { path = "protosocket-rpc" }
 protosocket-server      = { path = "protosocket-server" }
 protosocket-prost       = { path = "protosocket-prost" }
 

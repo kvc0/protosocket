@@ -1,6 +1,6 @@
 [package]
-name = "protosocket-rpc-client"
-description = "RPC client using protosockets"
+name = "protosocket-rpc"
+description = "RPC using protosockets"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

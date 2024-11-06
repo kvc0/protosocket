@@ -6,7 +6,8 @@ use std::{
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{rpc_drop_guard::RpcDropGuard, Message};
+use super::rpc_drop_guard::RpcDropGuard;
+use crate::Message;
 
 /// A completion for a unary RPC.
 #[derive(Debug)]

@@ -4,7 +4,7 @@ use protosocket::Connection;
 use tokio::sync::mpsc;
 
 use crate::{
-    completion_reactor::{RpcCompletionConnectionBindings, RpcCompletionReactor},
+    reactor::completion_reactor::{RpcCompletionConnectionBindings, RpcCompletionReactor},
     rpc_client::RpcClient,
     Message,
 };

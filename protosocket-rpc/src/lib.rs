@@ -14,17 +14,14 @@
 //! adding a layer of RPC semantics. You are expected to write a wrapper with the functions
 //! that make sense for your application, and use this client as the transport layer.
 
-mod completion_reactor;
-mod completion_streaming;
-mod completion_unary;
 mod configuration;
 mod error;
 mod message;
+mod reactor;
 mod rpc_client;
-mod rpc_drop_guard;
 
-pub use completion_streaming::StreamingCompletion;
-pub use completion_unary::UnaryCompletion;
+pub use reactor::completion_streaming::StreamingCompletion;
+pub use reactor::completion_unary::UnaryCompletion;
 pub use configuration::{connect, Configuration};
 pub use error::{Error, Result};
 pub use message::{Message, ProtosocketControlCode};
