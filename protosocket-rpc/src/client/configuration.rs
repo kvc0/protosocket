@@ -4,10 +4,11 @@ use protosocket::Connection;
 use tokio::sync::mpsc;
 
 use crate::{
-    reactor::completion_reactor::{RpcCompletionConnectionBindings, RpcCompletionReactor},
-    rpc_client::RpcClient,
+    client::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor},
     Message,
 };
+
+use super::{completion_reactor::RpcCompletionConnectionBindings, RpcClient};
 
 /// Configuration for a `protosocket` rpc client.
 #[derive(Debug, Clone)]
@@ -63,7 +64,10 @@ where
     let stream = tokio::net::TcpStream::connect(address).await?;
     stream.set_nodelay(true)?;
 
-    let message_reactor: RpcCompletionReactor<Deserializer::Message> = RpcCompletionReactor::new();
+    let message_reactor: RpcCompletionReactor<
+        Deserializer::Message,
+        DoNothingMessageHandler<Deserializer::Message>,
+    > = RpcCompletionReactor::new(Default::default());
     let (outbound, outbound_messages) = mpsc::channel(configuration.max_queued_outbound_messages);
     let rpc_client = RpcClient::new(outbound, &message_reactor);
 

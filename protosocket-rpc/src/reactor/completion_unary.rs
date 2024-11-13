@@ -4,45 +4,38 @@ use std::{
     task::{Context, Poll},
 };
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
-use super::rpc_drop_guard::RpcDropGuard;
+use super::completion_registry::CompletionGuard;
 use crate::Message;
 
 /// A completion for a unary RPC.
 #[derive(Debug)]
-pub struct UnaryCompletion<Request, Response>
+pub struct UnaryCompletion<Response>
 where
-    Request: Message,
     Response: Message,
 {
     completion: oneshot::Receiver<crate::Result<Response>>,
-    drop_guard: RpcDropGuard<Request>,
+    _completion_guard: CompletionGuard<Response>,
 }
 
-impl<Request, Response> UnaryCompletion<Request, Response>
+impl<Response> UnaryCompletion<Response>
 where
-    Request: Message,
     Response: Message,
 {
-    pub fn new(
-        request_id: u64,
-        cancellation_submission_queue: mpsc::Sender<Request>,
-    ) -> (oneshot::Sender<crate::Result<Response>>, Self) {
-        let (completor, completion) = oneshot::channel();
-        (
-            completor,
-            Self {
-                completion,
-                drop_guard: RpcDropGuard::new(cancellation_submission_queue, request_id),
-            },
-        )
+    pub(crate) fn new(
+        completion: oneshot::Receiver<crate::Result<Response>>,
+        completion_guard: CompletionGuard<Response>,
+    ) -> Self {
+        Self {
+            completion,
+            _completion_guard: completion_guard,
+        }
     }
 }
 
-impl<Request, Response> Future for UnaryCompletion<Request, Response>
+impl<Response> Future for UnaryCompletion<Response>
 where
-    Request: Message,
     Response: Message,
 {
     type Output = crate::Result<Response>;
@@ -50,14 +43,8 @@ where
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         match pin!(&mut self.completion).poll(context) {
             Poll::Ready(result) => match result {
-                Ok(done) => {
-                    self.drop_guard.set_complete();
-                    Poll::Ready(done)
-                }
-                Err(_cancelled) => {
-                    self.drop_guard.set_complete();
-                    Poll::Ready(Err(crate::Error::CancelledRemotely))
-                }
+                Ok(done) => Poll::Ready(done),
+                Err(_cancelled) => Poll::Ready(Err(crate::Error::CancelledRemotely)),
             },
             Poll::Pending => Poll::Pending,
         }

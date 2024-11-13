@@ -17,4 +17,5 @@ futures                 = { workspace = true }
 k-lock                  = { workspace = true }
 log                     = { workspace = true }
 tokio                   = { workspace = true }
+tokio-util              = { workspace = true }
 thiserror               = { workspace = true }

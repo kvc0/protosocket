@@ -29,6 +29,10 @@ where
     pub fn set_complete(&mut self) {
         self.completed = true;
     }
+
+    pub fn is_complete(&self) -> bool {
+        self.completed
+    }
 }
 
 impl<Request> Drop for RpcDropGuard<Request>
@@ -37,10 +41,9 @@ where
 {
     fn drop(&mut self) {
         if !self.completed {
-            if let Err(e) = self
-                .cancellation_submission_queue
-                .try_send(Request::cancelled(self.message_id))
-            {
+            let mut message = Request::cancelled();
+            message.set_message_id(self.message_id);
+            if let Err(e) = self.cancellation_submission_queue.try_send(message) {
                 log::warn!("failed to send cancellation message: {:?}", e);
             }
         }

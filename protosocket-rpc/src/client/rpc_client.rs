@@ -1,17 +1,15 @@
-use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::sync::{atomic::AtomicBool, Arc};
 
-use k_lock::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
+use crate::client::completion_reactor::RpcCompletionReactor;
+use crate::reactor::completion_registry::{Completion, CompletionGuard, RpcRegistrar};
 use crate::reactor::{
-    completion_reactor::{Completion, RpcCompletionReactor},
-    completion_streaming::StreamingCompletion,
-    completion_unary::UnaryCompletion,
+    completion_streaming::StreamingCompletion, completion_unary::UnaryCompletion,
 };
 use crate::Message;
+
+use super::completion_reactor::DoNothingMessageHandler;
 
 /// A client for sending RPCs to a protosockets rpc server.
 ///
@@ -25,7 +23,7 @@ where
     Response: Message,
 {
     #[allow(clippy::type_complexity)]
-    in_flight_submission: Arc<Mutex<HashMap<u64, Completion<Response>>>>,
+    in_flight_submission: RpcRegistrar<Response>,
     submission_queue: tokio::sync::mpsc::Sender<Request>,
     is_alive: Arc<AtomicBool>,
 }
@@ -37,7 +35,7 @@ where
 {
     pub(crate) fn new(
         submission_queue: mpsc::Sender<Request>,
-        message_reactor: &RpcCompletionReactor<Response>,
+        message_reactor: &RpcCompletionReactor<Response, DoNothingMessageHandler<Response>>,
     ) -> Self {
         Self {
             submission_queue,
@@ -53,11 +51,13 @@ where
     pub async fn send_streaming(
         &self,
         request: Request,
-    ) -> crate::Result<StreamingCompletion<Request, Response>> {
-        let (sender, completion) =
-            StreamingCompletion::new(request.message_id(), self.submission_queue.clone());
-        self.send_message(Completion::Streaming(sender), request)
+    ) -> crate::Result<StreamingCompletion<Response>> {
+        let (sender, completion) = mpsc::unbounded_channel();
+        let completion_guard = self
+            .send_message(Completion::RemoteStreaming(sender), request)
             .await?;
+
+        let completion = StreamingCompletion::new(completion, completion_guard);
 
         Ok(completion)
     }
@@ -66,15 +66,13 @@ where
     ///
     /// This function only sends the request. You must await the completion to get the response.
     #[must_use = "You must await the completion to get the response. If you drop the completion, the request will be cancelled."]
-    pub async fn send_unary(
-        &self,
-        request: Request,
-    ) -> crate::Result<UnaryCompletion<Request, Response>> {
-        let (sender, completion) =
-            UnaryCompletion::new(request.message_id(), self.submission_queue.clone());
-
-        self.send_message(Completion::Unary(sender), request)
+    pub async fn send_unary(&self, request: Request) -> crate::Result<UnaryCompletion<Response>> {
+        let (completor, completion) = oneshot::channel();
+        let completion_guard = self
+            .send_message(Completion::Unary(completor), request)
             .await?;
+
+        let completion = UnaryCompletion::new(completion, completion_guard);
 
         Ok(completion)
     }
@@ -83,27 +81,18 @@ where
         &self,
         completion: Completion<Response>,
         request: Request,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<CompletionGuard<Response>> {
         if !self.is_alive.load(std::sync::atomic::Ordering::Relaxed) {
             // early-out if the connection is closed
             return Err(crate::Error::ConnectionIsClosed);
         }
-        self.register_completion(request.message_id(), completion);
+        let completion_guard = self
+            .in_flight_submission
+            .register_completion(request.message_id(), completion);
         self.submission_queue
             .send(request)
             .await
             .map_err(|_e| crate::Error::ConnectionIsClosed)
-    }
-
-    // The triple-buffered message queue mutex is carefully controlled - it can't panic unless the memory allocator panics.
-    // Probably the server should crash if that happens.
-    // Note that this is just for tracking - you have to register the completion before sending the message, or else you might
-    // miss the completion.
-    #[allow(clippy::expect_used)]
-    fn register_completion(&self, message_id: u64, completion: Completion<Response>) {
-        self.in_flight_submission
-            .lock()
-            .expect("brief internal mutex must work")
-            .insert(message_id, completion);
+            .map(|_| completion_guard)
     }
 }

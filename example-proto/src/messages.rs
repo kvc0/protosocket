@@ -45,9 +45,20 @@ impl protosocket_rpc::Message for Request {
         }
     }
 
-    fn cancelled(message_id: u64) -> Self {
+    fn cancelled() -> Self {
         Request {
-            request_id: message_id,
+            request_id: 0,
+            body: None,
+        }
+    }
+
+    fn set_message_id(&mut self, message_id: u64) {
+        self.request_id = message_id;
+    }
+
+    fn ended() -> Self {
+        Self {
+            request_id: 0,
             body: None,
         }
     }
@@ -66,9 +77,20 @@ impl protosocket_rpc::Message for Response {
         }
     }
 
-    fn cancelled(message_id: u64) -> Self {
+    fn cancelled() -> Self {
         Response {
-            request_id: message_id,
+            request_id: 0,
+            body: None,
+        }
+    }
+
+    fn set_message_id(&mut self, message_id: u64) {
+        self.request_id = message_id
+    }
+
+    fn ended() -> Self {
+        Self {
+            request_id: 0,
             body: None,
         }
     }

@@ -5,7 +5,7 @@ use std::{
 
 use tokio::sync::mpsc;
 
-use super::rpc_drop_guard::RpcDropGuard;
+use super::completion_registry::CompletionGuard;
 use crate::Message;
 
 /// A completion for a streaming RPC.
@@ -15,52 +15,40 @@ use crate::Message;
 /// intended use case, protosockets do not buffer RPC response data internally beyond what
 /// the network does.
 #[derive(Debug)]
-pub struct StreamingCompletion<Request, Response>
+pub struct StreamingCompletion<Response>
 where
-    Request: Message,
     Response: Message,
 {
     completion: mpsc::UnboundedReceiver<Response>,
-    drop_guard: RpcDropGuard<Request>,
+    _completion_guard: CompletionGuard<Response>,
     closed: bool,
     nexts: Vec<Response>,
 }
 
 /// SAFETY: There is no unsafe code in this implementation
-impl<Request, Response> Unpin for StreamingCompletion<Request, Response>
-where
-    Request: Message,
-    Response: Message,
-{
-}
+impl<Response> Unpin for StreamingCompletion<Response> where Response: Message {}
 
 const LIMIT: usize = 16;
 
-impl<Request, Response> StreamingCompletion<Request, Response>
+impl<Response> StreamingCompletion<Response>
 where
-    Request: Message,
     Response: Message,
 {
-    pub fn new(
-        request_id: u64,
-        cancellation_submission_queue: mpsc::Sender<Request>,
-    ) -> (mpsc::UnboundedSender<Response>, Self) {
-        let (completor, completion) = mpsc::unbounded_channel();
-        (
-            completor,
-            Self {
-                completion,
-                drop_guard: RpcDropGuard::new(cancellation_submission_queue, request_id),
-                closed: false,
-                nexts: Vec::with_capacity(LIMIT),
-            },
-        )
+    pub(crate) fn new(
+        completion: mpsc::UnboundedReceiver<Response>,
+        completion_guard: CompletionGuard<Response>,
+    ) -> Self {
+        Self {
+            completion,
+            _completion_guard: completion_guard,
+            closed: false,
+            nexts: Vec::with_capacity(LIMIT),
+        }
     }
 }
 
-impl<Request, Response> futures::Stream for StreamingCompletion<Request, Response>
+impl<Response> futures::Stream for StreamingCompletion<Response>
 where
-    Request: Message,
     Response: Message,
 {
     type Item = crate::Result<Response>;
@@ -78,7 +66,6 @@ where
                 Poll::Ready(count) => {
                     if count == 0 {
                         self.closed = true;
-                        self.drop_guard.set_complete();
                         return Poll::Ready(Some(Err(crate::Error::Finished)));
                     }
                 }

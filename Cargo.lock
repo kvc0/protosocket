@@ -501,6 +501,7 @@ dependencies = [
  "protosocket",
  "thiserror",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
