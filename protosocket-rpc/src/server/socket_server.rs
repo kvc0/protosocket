@@ -11,22 +11,15 @@ use super::connection_server::RpcConnectionServer;
 use super::rpc_submitter::RpcSubmitter;
 use super::server_traits::SocketService;
 
-/// A `protosocket::Connection` is an IO driver. It directly uses tokio's io wrapper of mio to poll
-/// the OS's io primitives, manages read and write buffers, and vends messages to & from connections.
-/// Connections send messages to the ConnectionServer through an mpsc channel, and they receive
-/// inbound messages via a reactor callback.
+/// A `SocketRpcServer` is a server future. It listens on a socket and spawns new connections,
+/// with a ConnectionService to handle each connection.
 ///
-/// Protosockets are monomorphic messages: You can only have 1 kind of message per service.
+/// Protosockets use monomorphic messages: You can only have 1 kind of message per service.
 /// The expected way to work with this is to use prost and protocol buffers to encode messages.
-/// Of course you can do whatever you want, as the telnet example shows.
 ///
-/// Protosocket messages are not opinionated about request & reply. If you are, you will need
-/// to implement such a thing. This allows you freely choose whether you want to send
-/// fire-&-forget messages sometimes; however it requires you to write your protocol's rules.
-/// You get an inbound iterable of <MessageIn> batches and an outbound stream of <MessageOut> per
-/// connection - you decide what those mean for you!
-///
-/// A SocketRpcServer is a future: You spawn it and it runs forever.
+/// The socket server hosts your SocketService.
+/// Your SocketService creates a ConnectionService for each new connection.
+/// Your ConnectionService manages one connection. It is Dropped when the connection is closed.
 pub struct SocketRpcServer<TSocketService>
 where
     TSocketService: SocketService,
@@ -41,9 +34,7 @@ impl<TSocketService> SocketRpcServer<TSocketService>
 where
     TSocketService: SocketService,
 {
-    /// Construct a new `ProtosocketServer` listening on the provided address.
-    /// The address will be bound and listened upon with `SO_REUSEADDR` set.
-    /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
+    /// Construct a new `SocketRpcServer` listening on the provided address.
     pub async fn new(
         address: std::net::SocketAddr,
         socket_server: TSocketService,

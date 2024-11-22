@@ -11,9 +11,7 @@ use crate::Message;
 /// A completion for a streaming RPC.
 ///
 /// Make sure you process this stream quickly, and drop data yourself if you have to. The
-/// server will send data as quickly as it can. To avoid needless framework buffers in the
-/// intended use case, protosockets do not buffer RPC response data internally beyond what
-/// the network does.
+/// server will send data as quickly as it can.
 #[derive(Debug)]
 pub struct StreamingCompletion<Response>
 where

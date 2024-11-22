@@ -67,7 +67,7 @@ pub trait ConnectionService: Send + Unpin + 'static {
     ) -> RpcKind<Self::UnaryFutureType, Self::StreamType>;
 }
 
-/// Type of rpc to be spawned
+/// Type of rpc to be awaited
 pub enum RpcKind<Unary, Streaming> {
     /// This is a unary rpc. It will complete with a single response.
     Unary(Unary),
