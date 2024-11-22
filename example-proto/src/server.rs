@@ -12,13 +12,14 @@ mod messages;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    let server = protosocket_rpc::server::SocketRpcServer::new(
+    let mut server = protosocket_rpc::server::SocketRpcServer::new(
         std::env::var("HOST")
             .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
             .parse()?,
         DemoRpcSocketService,
     )
     .await?;
+    server.set_max_queued_outbound_messages(512);
 
     tokio::spawn(server).await??;
     Ok(())

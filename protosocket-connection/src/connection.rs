@@ -302,6 +302,7 @@ where
             return Poll::Pending;
         }
 
+        let start_len = self.send_buffer.len();
         for _ in 0..max_outbound {
             let message = match self.outbound_message_buffer.pop() {
                 Some(next) => next,
@@ -347,6 +348,16 @@ where
             );
             // queue up a writev
             self.send_buffer.push_back(buffer);
+        }
+        let new_len = self.send_buffer.len();
+        if start_len != new_len {
+            log::debug!(
+                "serialized {} messages, waking task to look for more input",
+                new_len - start_len
+            );
+            // if the serializer made progress, there may be more work that the network or outbound channel can do.
+            // make sure the task gets another round to try.
+            context.waker().wake_by_ref();
         }
         Poll::Pending
     }
@@ -462,7 +473,7 @@ where
                     }
                 }
             } else {
-                log::trace!("receive buffer is full");
+                log::debug!("receive buffer is full");
             };
         }
         None
