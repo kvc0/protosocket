@@ -434,9 +434,6 @@ where
                             log::error!("error while polling read readiness: {e:?}");
                             return Some(Poll::Ready(()));
                         }
-                        // Not looping on receive, so if I'm readable I'll just come back around.
-                        // poll_read_ready owns the wake state for the read half of the stream.
-                        context.waker().wake_by_ref();
 
                         // Step 1a: read raw bytes from the stream
                         match self.read_inbound() {
