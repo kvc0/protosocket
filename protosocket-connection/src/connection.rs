@@ -475,12 +475,20 @@ where
             // Otherwise, I want the task to be woken.
             return None;
         }
+        let start_len = self.inbound_messages.len();
         match self.read_inbound_messages_into_read_queue() {
             ReadBufferState::WaitingForMore => {
                 log::trace!("read queue is still open");
-                // If you don't wake here, then when the read side gets full, you won't be registered for network
-                // activity wakes.
-                context.waker().wake_by_ref();
+                let new_len = self.inbound_messages.len();
+                if start_len != new_len {
+                    // If you don't wake here, then when the read side gets full, you won't be registered for network
+                    // activity wakes.
+                    // You can skip this wake when you are deserializing a large message, because that is waiting
+                    // for more inbound data to arrive. You are only WaitingForMore when you're mid-message,
+                    // and if you've just got the one message you can wait for the network.
+                    // There's no deserializer progress to report if you didn't deserialize anything.
+                    context.waker().wake_by_ref();
+                }
             }
             ReadBufferState::PartiallyConsumed => {
                 log::debug!("read buffer partially consumed for responsiveness {self}");
