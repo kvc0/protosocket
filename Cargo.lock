@@ -498,6 +498,7 @@ dependencies = [
  "futures",
  "k-lock",
  "log",
+ "prost",
  "protosocket",
  "thiserror",
  "tokio",

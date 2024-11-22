@@ -11,20 +11,21 @@ pub trait Message: std::fmt::Debug + Send + Unpin + 'static {
     fn set_message_id(&mut self, message_id: u64);
 
     /// Create a message with a message with a cancel control code - used by the framework to handle cancellation.
-    fn cancelled() -> Self;
+    fn cancelled(message_id: u64) -> Self;
 
     /// Create a message with a message with an ended control code - used by the framework to handle streaming completion.
-    fn ended() -> Self;
+    fn ended(message_id: u64) -> Self;
 }
 
 #[derive(Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum ProtosocketControlCode {
     /// No special behavior
-    Normal,
+    Normal = 0,
     /// Cancel processing the message with this message's id
-    Cancel,
+    Cancel = 1,
     /// End processing the message with this message's id - for response streaming
-    End,
+    End = 2,
 }
 
 impl ProtosocketControlCode {

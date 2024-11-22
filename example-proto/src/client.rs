@@ -3,8 +3,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use messages::{EchoRequest, Request, Response};
-use protosocket_rpc::client::RpcClient;
+use futures::StreamExt;
+use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
+use protosocket_rpc::{client::RpcClient, ProtosocketControlCode};
 use tokio::sync::Semaphore;
 
 mod messages;
@@ -31,9 +32,9 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
+    let max_concurrent = 512;
+    let concurrent_count = Arc::new(Semaphore::new(max_concurrent));
     for _i in 0..2 {
-        let concurrent_count = Arc::new(Semaphore::new(256));
-
         let (client, connection) = protosocket_rpc::client::connect::<
             protosocket_prost::ProstSerializer<Response, Request>,
             protosocket_prost::ProstSerializer<Response, Request>,
@@ -47,14 +48,19 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
         let _connection_handle = tokio::spawn(connection);
         let _client_handle = tokio::spawn(generate_traffic(
-            concurrent_count,
+            concurrent_count.clone(),
             client,
             response_count.clone(),
             latency.clone(),
         ));
     }
 
-    let metrics = tokio::spawn(print_periodic_metrics(response_count, latency));
+    let metrics = tokio::spawn(print_periodic_metrics(
+        response_count,
+        latency,
+        concurrent_count,
+        max_concurrent,
+    ));
 
     tokio::select!(
         // _ = connection_driver => {
@@ -74,6 +80,8 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 async fn print_periodic_metrics(
     response_count: Arc<AtomicUsize>,
     latency: Arc<histogram::AtomicHistogram>,
+    concurrent_count: Arc<Semaphore>,
+    max_concurrent: usize,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -101,7 +109,8 @@ async fn print_periodic_metrics(
             .map(|b| *b.range().end())
             .unwrap_or_default() as f64
             / 1000.0;
-        eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs");
+        let concurrent = max_concurrent - concurrent_count.available_permits();
+        eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}");
     }
 }
 
@@ -119,32 +128,72 @@ async fn generate_traffic(
             .acquire_owned()
             .await
             .expect("semaphore works");
-        match client
-            .send_unary(Request {
-                request_id: i,
-                body: Some(EchoRequest {
-                    message: i.to_string(),
-                    nanotime: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("time works")
-                        .as_nanos() as u64,
-                }),
-            })
-            .await
-        {
-            Ok(completion) => {
-                i += 1;
-                let metrics_count = metrics_count.clone();
-                let metrics_latency = metrics_latency.clone();
-                tokio::spawn(async move {
-                    let response = completion.await.expect("response must be successful");
-                    handle_response(response, metrics_count, metrics_latency);
-                    drop(permit);
-                });
+        if i % 2 == 0 {
+            match client
+                .send_unary(Request {
+                    request_id: i,
+                    code: ProtosocketControlCode::Normal as u32,
+                    body: Some(EchoRequest {
+                        message: i.to_string(),
+                        nanotime: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("time works")
+                            .as_nanos() as u64,
+                    }),
+                    response_behavior: ResponseBehavior::Unary as i32,
+                })
+                .await
+            {
+                Ok(completion) => {
+                    i += 1;
+                    let metrics_count = metrics_count.clone();
+                    let metrics_latency = metrics_latency.clone();
+                    tokio::spawn(async move {
+                        let response = completion.await.expect("response must be successful");
+                        handle_response(response, metrics_count, metrics_latency);
+                        drop(permit);
+                    });
+                }
+                Err(e) => {
+                    log::error!("send should work: {e:?}");
+                    return;
+                }
             }
-            Err(e) => {
-                log::error!("send should work: {e:?}");
-                return;
+        } else {
+            match client
+                .send_streaming(Request {
+                    request_id: i,
+                    code: ProtosocketControlCode::Normal as u32,
+                    body: Some(EchoRequest {
+                        message: i.to_string(),
+                        nanotime: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("time works")
+                            .as_nanos() as u64,
+                    }),
+                    response_behavior: ResponseBehavior::Stream as i32,
+                })
+                .await
+            {
+                Ok(mut completion) => {
+                    i += 1;
+                    let metrics_count = metrics_count.clone();
+                    let metrics_latency = metrics_latency.clone();
+                    tokio::spawn(async move {
+                        while let Some(Ok(response)) = completion.next().await {
+                            handle_stream_response(
+                                response,
+                                metrics_count.clone(),
+                                metrics_latency.clone(),
+                            );
+                        }
+                        drop(permit);
+                    });
+                }
+                Err(e) => {
+                    log::error!("send should work: {e:?}");
+                    return;
+                }
             }
         }
     }
@@ -155,21 +204,60 @@ fn handle_response(
     metrics_count: Arc<AtomicUsize>,
     metrics_latency: Arc<histogram::AtomicHistogram>,
 ) {
-    let latency = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time works")
-        .as_nanos() as u64
-        - response.body.as_ref().expect("must have a body").nanotime;
-    let _ = metrics_latency.increment(latency);
-    assert_eq!(
-        response.request_id,
-        response
-            .body
-            .unwrap_or_default()
-            .message
-            .parse()
-            .unwrap_or_default()
-    );
-    assert_ne!(response.request_id, 0, "received bad message");
     metrics_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let request_id = response.request_id;
+    assert_ne!(response.request_id, 0, "received bad message");
+    match response.kind {
+        Some(EchoResponseKind::Echo(echo)) => {
+            assert_eq!(request_id, echo.message.parse().unwrap_or_default());
+
+            let latency = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time works")
+                .as_nanos() as u64
+                - echo.nanotime;
+            let _ = metrics_latency.increment(latency);
+        }
+        Some(EchoResponseKind::Stream(_char_response)) => {
+            log::error!("got a stream response for a unary request");
+        }
+        None => {
+            log::warn!("no response body");
+        }
+    }
+}
+
+fn handle_stream_response(
+    response: Response,
+    metrics_count: Arc<AtomicUsize>,
+    metrics_latency: Arc<histogram::AtomicHistogram>,
+) {
+    log::debug!("received stream response {response:?}");
+    metrics_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let request_id = response.request_id;
+    assert_ne!(response.request_id, 0, "received bad message");
+    match response.kind {
+        Some(EchoResponseKind::Echo(_echo)) => {
+            log::error!("got a unary response for a stream request");
+        }
+        Some(EchoResponseKind::Stream(char_response)) => {
+            assert_eq!(
+                request_id.to_string()
+                    [(char_response.sequence as usize)..=(char_response.sequence as usize)],
+                char_response.message
+            );
+
+            let latency = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time works")
+                .as_nanos() as u64
+                - char_response.nanotime;
+            let _ = metrics_latency.increment(latency);
+        }
+        None => {
+            log::warn!("no response body");
+        }
+    }
 }

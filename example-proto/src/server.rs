@@ -1,10 +1,10 @@
-use std::sync::{atomic::AtomicUsize, Arc};
-
-use messages::{EchoResponse, Request, Response};
-use protosocket::{ConnectionBindings, MessageReactor, ReactorStatus, Serializer};
-use protosocket_prost::{ProstSerializer, ProstServerConnectionBindings};
-use protosocket_server::{ProtosocketServer, ServerConnector};
-use tokio::sync::Semaphore;
+use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
+use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
+use protosocket_prost::ProstSerializer;
+use protosocket_rpc::{
+    server::{ConnectionService, RpcKind, SocketService},
+    ProtosocketControlCode,
+};
 
 mod messages;
 
@@ -12,15 +12,11 @@ mod messages;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    let server_context = ServerContext {
-        _connections: Default::default(),
-    };
-    let server = ProtosocketServer::new(
+    let server = protosocket_rpc::server::SocketRpcServer::new(
         std::env::var("HOST")
             .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
             .parse()?,
-        tokio::runtime::Handle::current(),
-        server_context,
+        DemoRpcSocketService,
     )
     .await?;
 
@@ -28,77 +24,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct ServerContext {
-    _connections: Arc<AtomicUsize>,
-}
+/// This is the service that will be used to handle new connections.
+/// It doesn't do much; yours might be simple like this too, or it might wire your per-connection
+/// ConnectionServices to application-wide state tracking.
+struct DemoRpcSocketService;
+impl SocketService for DemoRpcSocketService {
+    type RequestDeserializer = ProstSerializer<Request, Response>;
+    type ResponseSerializer = ProstSerializer<Request, Response>;
+    type ConnectionService = DemoRpcConnectionServer;
 
-impl ServerConnector for ServerContext {
-    type Bindings = ProstServerConnectionBindings<Request, Response, ProtoReflexReactor>;
-
-    fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
-        ProstSerializer::default()
+    fn deserializer(&self) -> Self::RequestDeserializer {
+        Self::RequestDeserializer::default()
     }
 
-    fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer {
-        ProstSerializer::default()
+    fn serializer(&self) -> Self::ResponseSerializer {
+        Self::ResponseSerializer::default()
     }
 
-    fn new_reactor(
-        &self,
-        optional_outbound: tokio::sync::mpsc::Sender<
-            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
-        >,
-    ) -> <Self::Bindings as ConnectionBindings>::Reactor {
-        ProtoReflexReactor {
-            outbound: optional_outbound,
-            concurrent_requests: Arc::new(Semaphore::new(8192)),
-        }
+    fn new_connection_service(&self, address: std::net::SocketAddr) -> Self::ConnectionService {
+        log::info!("new connection server {address}");
+        DemoRpcConnectionServer { address }
     }
 }
 
-struct ProtoReflexReactor {
-    outbound: tokio::sync::mpsc::Sender<Response>,
-    concurrent_requests: Arc<Semaphore>,
+/// This is the entry point for each Connection. State per-connection is tracked, and you
+/// get mutable access to the service on each new rpc for state tracking.
+struct DemoRpcConnectionServer {
+    address: std::net::SocketAddr,
 }
-impl MessageReactor for ProtoReflexReactor {
-    type Inbound = Request;
+impl ConnectionService for DemoRpcConnectionServer {
+    type Request = Request;
+    type Response = Response;
+    // Ideally you'd use real Future and Stream types here for performance and debuggability.
+    // For a demo though, it's fine to use BoxFuture and BoxStream.
+    type UnaryFutureType = BoxFuture<'static, Response>;
+    type StreamType = BoxStream<'static, Response>;
 
-    fn on_inbound_messages(
+    fn new_rpc(
         &mut self,
-        messages: impl IntoIterator<Item = Self::Inbound>,
-    ) -> ReactorStatus {
-        for message in messages {
-            let permit = match self.concurrent_requests.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    log::warn!("shedding load");
-                    continue;
-                    // could return err here and disconnect the client
-                    // return ReactorStatus::Disconnect;
+        initiating_message: Self::Request,
+    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
+        log::debug!("{} new rpc: {initiating_message:?}", self.address);
+        let request_id = initiating_message.request_id;
+        let behavior = initiating_message.response_behavior();
+        match initiating_message.body {
+            Some(echo) => match behavior {
+                ResponseBehavior::Unary => RpcKind::Unary(echo_request(request_id, echo).boxed()),
+                ResponseBehavior::Stream => {
+                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
                 }
-            };
-            let outbound = self.outbound.clone();
-            tokio::spawn(async move {
-                let permit = permit;
-                if let Err(e) = outbound
-                    .send(Response {
-                        request_id: message.request_id,
-                        body: message.body.map(|b| EchoResponse {
-                            message: b.message,
-                            nanotime: b.nanotime,
-                        }),
-                    })
-                    .await
-                {
-                    log::trace!("could not send response: {e:?}")
-                }
-                log::trace!(
-                    "permits at end of request handler: {}",
-                    permit.num_permits()
+            },
+            None => {
+                // No completion messages will be sent for this message
+                log::warn!(
+                    "{request_id} no request in rpc body. This may cause a client memory leak."
                 );
-            });
+                RpcKind::Unknown
+            }
         }
-        ReactorStatus::Continue
     }
+}
+
+async fn echo_request(request_id: u64, echo: EchoRequest) -> Response {
+    Response {
+        request_id,
+        code: ProtosocketControlCode::Normal as u32,
+        kind: Some(messages::EchoResponseKind::Echo(EchoResponse {
+            message: echo.message,
+            nanotime: echo.nanotime,
+        })),
+    }
+}
+
+fn echo_stream(request_id: u64, echo: EchoRequest) -> impl Stream<Item = Response> {
+    let nanotime = echo.nanotime;
+    futures::stream::iter(echo.message.into_bytes().into_iter().enumerate().map(
+        move |(sequence, c)| Response {
+            request_id,
+            code: ProtosocketControlCode::Normal as u32,
+            kind: Some(messages::EchoResponseKind::Stream(EchoStream {
+                message: (c as char).to_string(),
+                nanotime,
+                sequence: sequence as u64,
+            })),
+        },
+    ))
 }

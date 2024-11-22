@@ -71,7 +71,7 @@ where
                     self.in_flight.insert(command_id, completion);
                 }
                 CompletionState::Done => {
-                    log::debug!("command {command_id} done");
+                    log::debug!("{command_id} command done");
                     self.in_flight.remove(&command_id);
                 }
             }

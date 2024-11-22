@@ -4,11 +4,11 @@ use protosocket::Connection;
 use tokio::sync::mpsc;
 
 use crate::{
-    client::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor},
+    client::reactor::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor},
     Message,
 };
 
-use super::{completion_reactor::RpcCompletionConnectionBindings, RpcClient};
+use super::{reactor::completion_reactor::RpcCompletionConnectionBindings, RpcClient};
 
 /// Configuration for a `protosocket` rpc client.
 #[derive(Debug, Clone)]

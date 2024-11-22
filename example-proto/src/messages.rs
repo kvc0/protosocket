@@ -4,8 +4,19 @@ use protosocket_rpc::ProtosocketControlCode;
 pub struct Request {
     #[prost(uint64, tag = "1")]
     pub request_id: u64,
-    #[prost(message, tag = "2")]
+    #[prost(uint32, tag = "2")]
+    pub code: u32,
+    #[prost(message, tag = "3")]
     pub body: Option<EchoRequest>,
+    #[prost(enumeration = "ResponseBehavior", tag = "4")]
+    pub response_behavior: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum ResponseBehavior {
+    Unary = 0,
+    Stream = 1,
 }
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]
@@ -20,8 +31,18 @@ pub struct EchoRequest {
 pub struct Response {
     #[prost(uint64, tag = "1")]
     pub request_id: u64,
-    #[prost(message, tag = "2")]
-    pub body: Option<EchoResponse>,
+    #[prost(uint32, tag = "2")]
+    pub code: u32,
+    #[prost(oneof = "EchoResponseKind", tags = "3, 4")]
+    pub kind: Option<EchoResponseKind>,
+}
+
+#[derive(Clone, PartialEq, Eq, prost::Oneof)]
+pub enum EchoResponseKind {
+    #[prost(message, tag = "3")]
+    Echo(EchoResponse),
+    #[prost(message, tag = "4")]
+    Stream(EchoStream),
 }
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]
@@ -32,23 +53,31 @@ pub struct EchoResponse {
     pub nanotime: u64,
 }
 
+#[derive(Clone, PartialEq, Eq, prost::Message)]
+pub struct EchoStream {
+    #[prost(string, tag = "1")]
+    pub message: String,
+    #[prost(uint64, tag = "2")]
+    pub nanotime: u64,
+    #[prost(uint64, tag = "3")]
+    pub sequence: u64,
+}
+
 impl protosocket_rpc::Message for Request {
     fn message_id(&self) -> u64 {
         self.request_id
     }
 
     fn control_code(&self) -> ProtosocketControlCode {
-        // I'm treating the absence of a body as a cancellation. You can model this however best suits your messages.
-        match self.body {
-            Some(_) => ProtosocketControlCode::Normal,
-            None => ProtosocketControlCode::Cancel,
-        }
+        ProtosocketControlCode::from_u8(self.code as u8)
     }
 
-    fn cancelled() -> Self {
+    fn cancelled(request_id: u64) -> Self {
         Request {
-            request_id: 0,
+            request_id,
+            code: ProtosocketControlCode::Cancel as u32,
             body: None,
+            response_behavior: ResponseBehavior::Unary as i32,
         }
     }
 
@@ -56,10 +85,12 @@ impl protosocket_rpc::Message for Request {
         self.request_id = message_id;
     }
 
-    fn ended() -> Self {
+    fn ended(request_id: u64) -> Self {
         Self {
-            request_id: 0,
+            request_id,
+            code: ProtosocketControlCode::End as u32,
             body: None,
+            response_behavior: ResponseBehavior::Unary as i32,
         }
     }
 }
@@ -70,17 +101,14 @@ impl protosocket_rpc::Message for Response {
     }
 
     fn control_code(&self) -> ProtosocketControlCode {
-        // I'm treating the absence of a body as a cancellation. You can model this however best suits your messages.
-        match self.body {
-            Some(_) => ProtosocketControlCode::Normal,
-            None => ProtosocketControlCode::Cancel,
-        }
+        ProtosocketControlCode::from_u8(self.code as u8)
     }
 
-    fn cancelled() -> Self {
+    fn cancelled(request_id: u64) -> Self {
         Response {
-            request_id: 0,
-            body: None,
+            request_id,
+            code: ProtosocketControlCode::Cancel as u32,
+            kind: None,
         }
     }
 
@@ -88,10 +116,11 @@ impl protosocket_rpc::Message for Response {
         self.request_id = message_id
     }
 
-    fn ended() -> Self {
+    fn ended(request_id: u64) -> Self {
         Self {
-            request_id: 0,
-            body: None,
+            request_id,
+            code: ProtosocketControlCode::End as u32,
+            kind: None,
         }
     }
 }

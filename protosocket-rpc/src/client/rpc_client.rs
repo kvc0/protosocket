@@ -2,14 +2,12 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::client::completion_reactor::RpcCompletionReactor;
-use crate::reactor::completion_registry::{Completion, CompletionGuard, RpcRegistrar};
-use crate::reactor::{
+use super::reactor::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor};
+use super::reactor::completion_registry::{Completion, CompletionGuard, RpcRegistrar};
+use super::reactor::{
     completion_streaming::StreamingCompletion, completion_unary::UnaryCompletion,
 };
 use crate::Message;
-
-use super::completion_reactor::DoNothingMessageHandler;
 
 /// A client for sending RPCs to a protosockets rpc server.
 ///

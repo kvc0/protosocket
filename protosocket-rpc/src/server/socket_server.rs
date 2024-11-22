@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use super::connection_server::RpcConnectionServer;
 use super::rpc_submitter::RpcSubmitter;
-use super::server_traits::SocketServer;
+use super::server_traits::SocketService;
 
 /// A `protosocket::Connection` is an IO driver. It directly uses tokio's io wrapper of mio to poll
 /// the OS's io primitives, manages read and write buffers, and vends messages to & from connections.
@@ -26,27 +26,27 @@ use super::server_traits::SocketServer;
 /// You get an inbound iterable of <MessageIn> batches and an outbound stream of <MessageOut> per
 /// connection - you decide what those mean for you!
 ///
-/// A ProtosocketServer is a future: You spawn it and it runs forever.
-pub struct SocketRpcServer<TSocketServer>
+/// A SocketRpcServer is a future: You spawn it and it runs forever.
+pub struct SocketRpcServer<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
-    socket_server: TSocketServer,
+    socket_server: TSocketService,
     listener: tokio::net::TcpListener,
     max_buffer_length: usize,
     max_queued_outbound_messages: usize,
 }
 
-impl<TSocketServer> SocketRpcServer<TSocketServer>
+impl<TSocketService> SocketRpcServer<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
     /// Construct a new `ProtosocketServer` listening on the provided address.
     /// The address will be bound and listened upon with `SO_REUSEADDR` set.
     /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
     pub async fn new(
         address: std::net::SocketAddr,
-        socket_server: TSocketServer,
+        socket_server: TSocketService,
     ) -> crate::Result<Self> {
         let listener = tokio::net::TcpListener::bind(address).await?;
         Ok(Self {
@@ -68,9 +68,9 @@ where
     }
 }
 
-impl<TSocketServer> Future for SocketRpcServer<TSocketServer>
+impl<TSocketService> Future for SocketRpcServer<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
     type Output = Result<(), Error>;
 
@@ -83,14 +83,14 @@ where
                         let (submitter, inbound_messages) = RpcSubmitter::new();
                         let (outbound_messages, outbound_messages_receiver) =
                             mpsc::channel(self.max_queued_outbound_messages);
-                        let connection_server = self.socket_server.new_connection_server(address);
+                        let connection_service = self.socket_server.new_connection_service(address);
                         let connection_rpc_server = RpcConnectionServer::new(
-                            connection_server,
+                            connection_service,
                             inbound_messages,
                             outbound_messages,
                         );
 
-                        let connection: Connection<RpcSubmitter<TSocketServer>> = Connection::new(
+                        let connection: Connection<RpcSubmitter<TSocketService>> = Connection::new(
                             stream,
                             address,
                             self.socket_server.deserializer(),

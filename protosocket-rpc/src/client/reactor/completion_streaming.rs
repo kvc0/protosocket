@@ -68,6 +68,9 @@ where
                         self.closed = true;
                         return Poll::Ready(Some(Err(crate::Error::Finished)));
                     }
+                    // because it is a vector, we have to consume in reverse order. This is because
+                    // of the poll_recv_many argument type.
+                    nexts.reverse();
                 }
                 Poll::Pending => return Poll::Pending,
             }

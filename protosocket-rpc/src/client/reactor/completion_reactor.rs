@@ -7,11 +7,9 @@ use std::{
 
 use protosocket::{ConnectionBindings, MessageReactor, ReactorStatus};
 
-use crate::{
-    message::ProtosocketControlCode,
-    reactor::completion_registry::{Completion, CompletionRegistry, RpcRegistrar},
-    Message,
-};
+use crate::{message::ProtosocketControlCode, Message};
+
+use super::completion_registry::{Completion, CompletionRegistry, RpcRegistrar};
 
 pub struct RpcCompletionConnectionBindings<Serializer, Deserializer>(
     PhantomData<(Serializer, Deserializer)>,
@@ -95,12 +93,12 @@ where
             match message_from_the_network.control_code() {
                 ProtosocketControlCode::Normal => (),
                 ProtosocketControlCode::Cancel => {
-                    log::debug!("cancelling command {message_id_from_the_network}");
+                    log::debug!("{message_id_from_the_network} cancelling command");
                     self.rpc_registry.deregister(message_id_from_the_network);
                     continue;
                 }
                 ProtosocketControlCode::End => {
-                    log::debug!("end command {message_id_from_the_network}");
+                    log::debug!("{message_id_from_the_network} command end of stream");
                     self.rpc_registry.deregister(message_id_from_the_network);
                     continue;
                 }
@@ -109,21 +107,21 @@ where
                 Entry::Occupied(mut registered_rpc) => {
                     if let Completion::RemoteStreaming(stream) = registered_rpc.get_mut() {
                         if let Err(e) = stream.send(message_from_the_network) {
-                            log::debug!("completion channel closed - did the client lose interest in this request? {e:?}");
+                            log::debug!("{message_id_from_the_network} completion channel closed - did the client lose interest in this request? {e:?}");
                             registered_rpc.remove();
                         }
                     } else if let Completion::Unary(completion) = registered_rpc.remove() {
                         if let Err(e) = completion.send(Ok(message_from_the_network)) {
-                            log::debug!("completion channel closed - did the client lose interest in this request? {e:?}");
+                            log::debug!("{message_id_from_the_network} completion channel closed - did the client lose interest in this request? {e:?}");
                         }
                     } else {
-                        panic!("unexpected command response type. Sorry, I wanted to borrow for streaming and remove by value for unary without doing 2 map lookups, so I couldn't match");
+                        panic!("{message_id_from_the_network} unexpected command response type. Sorry, I wanted to borrow for streaming and remove by value for unary without doing 2 map lookups, so I couldn't match");
                     }
                 }
                 Entry::Vacant(_vacant_entry) => {
                     // Possibly a cancelled response if this is a client, and probably a new rpc if it's a server
                     log::debug!(
-                        "command response for command that was not in flight: {message_id_from_the_network}"
+                        "{message_id_from_the_network} command response for command that was not in flight"
                     );
                     self.unregistered_message_handler
                         .on_message(message_from_the_network, &mut self.rpc_registry);

@@ -19,7 +19,7 @@ where
     fn encode(&mut self, message: Self::Message, buffer: &mut impl bytes::BufMut) {
         match message.encode_length_delimited(buffer) {
             Ok(_) => {
-                log::trace!("encoded reply {message:?}");
+                log::debug!("encoded {message:?}");
             }
             Err(e) => {
                 log::error!("encoding error: {e:?}");
@@ -59,7 +59,7 @@ where
         match <Self::Message as prost::Message>::decode_length_delimited(&mut buffer) {
             Ok(message) => {
                 let length = start - buffer.remaining();
-                log::trace!("decoded request {length}: {message:?}");
+                log::debug!("decoded {length}: {message:?}");
                 Ok((length, message))
             }
             Err(e) => {

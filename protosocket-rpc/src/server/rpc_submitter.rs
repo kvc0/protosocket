@@ -1,33 +1,33 @@
 use protosocket::{ConnectionBindings, Deserializer, MessageReactor};
 use tokio::sync::mpsc;
 
-use super::SocketServer;
+use super::SocketService;
 
 #[derive(Debug, Clone)]
-pub struct RpcSubmitter<TSocketServer>
+pub struct RpcSubmitter<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
-    sender: mpsc::UnboundedSender<<TSocketServer::RequestDeserializer as Deserializer>::Message>,
+    sender: mpsc::UnboundedSender<<TSocketService::RequestDeserializer as Deserializer>::Message>,
 }
-impl<TSocketServer> RpcSubmitter<TSocketServer>
+impl<TSocketService> RpcSubmitter<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
     pub fn new() -> (
         Self,
-        mpsc::UnboundedReceiver<<TSocketServer::RequestDeserializer as Deserializer>::Message>,
+        mpsc::UnboundedReceiver<<TSocketService::RequestDeserializer as Deserializer>::Message>,
     ) {
         let (sender, receiver) = mpsc::unbounded_channel();
         (Self { sender }, receiver)
     }
 }
 
-impl<TSocketServer> MessageReactor for RpcSubmitter<TSocketServer>
+impl<TSocketService> MessageReactor for RpcSubmitter<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
-    type Inbound = <TSocketServer::RequestDeserializer as Deserializer>::Message;
+    type Inbound = <TSocketService::RequestDeserializer as Deserializer>::Message;
 
     fn on_inbound_messages(
         &mut self,
@@ -46,11 +46,11 @@ where
     }
 }
 
-impl<TSocketServer> ConnectionBindings for RpcSubmitter<TSocketServer>
+impl<TSocketService> ConnectionBindings for RpcSubmitter<TSocketService>
 where
-    TSocketServer: SocketServer,
+    TSocketService: SocketService,
 {
-    type Deserializer = TSocketServer::RequestDeserializer;
-    type Serializer = TSocketServer::ResponseSerializer;
-    type Reactor = RpcSubmitter<TSocketServer>;
+    type Deserializer = TSocketService::RequestDeserializer;
+    type Serializer = TSocketService::ResponseSerializer;
+    type Reactor = RpcSubmitter<TSocketService>;
 }
