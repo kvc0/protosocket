@@ -1,3 +1,7 @@
+//! If you're only using rust, of course you can hand-write prost structs, but if you
+//! want to use a protosocket server with clients in other languages you'll want to
+//! generate from protos.
+
 use protosocket_rpc::ProtosocketControlCode;
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]

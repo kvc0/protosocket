@@ -1,19 +1,25 @@
 # protosocket
-Tools for building message-oriented tcp streams.
+Message-oriented, low-abstraction tcp streams.
 
 A protosocket is a non-blocking, bidirectional, message streaming connection.
 Providing a serializer and deserializer for your messages, you can stream to
 and from tcp servers.
 
+There is no wrapper encoding - no HTTP, no gRPC, no websockets. You depend on
+TCP and your serialization strategy.
+
+Dependencies are trim; `tokio` is the main hard dependency. If you use protocol
+buffers, you will also depend on `prost`. There's no extra underlying framework.
+
 Protosockets avoid too many opinions - you have (get?) to choose your own
 message ordering and concurrency semantics. You can make an implicitly ordered
 stream, or a non-blocking out-of-order stream, or anything in between.
 
-Tools to facilitate protocol buffers over tcp are provided in [`protosocket-prost`](./protosocket-prost/).
-You can see the protocol buffers example in [`example-proto`](./example-proto/).
-If you're only using rust, of course you can hand-write prost structs, but if you
-want to use a protosocket server with clients in other languages you'll want to
-generate from protos.
+Tools to facilitate protocol buffers are provided in [`protosocket-prost`](./protosocket-prost/).
+
+You can write an RPC client/server with [`protosocket-rpc`](./protosocket-rpc/).
+
+You can see an example of protocol buffers RPC in [`example-proto`](./example-proto/).
 
 # Case study
 ## Background
