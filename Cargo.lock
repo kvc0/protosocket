@@ -506,7 +506,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bytes",
  "futures",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-messagepack"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bytes",
  "log",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-prost"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bytes",
  "log",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-rpc"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "futures",
  "k-lock",
@@ -557,7 +557,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-server"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "bytes",
  "futures",
