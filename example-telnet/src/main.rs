@@ -97,9 +97,9 @@ struct StringSerializer;
 impl Serializer for StringSerializer {
     type Message = String;
 
-    fn encode(&mut self, mut response: Self::Message, buffer: &mut impl bytes::BufMut) {
+    fn encode(&mut self, mut response: Self::Message, buffer: &mut Vec<u8>) {
         response.push_str(" ENCODED\n");
-        buffer.put(response.as_bytes());
+        buffer.extend_from_slice(response.as_bytes());
     }
 }
 impl Deserializer for StringSerializer {

@@ -194,6 +194,7 @@ where
 
             let buffer = &self.receive_buffer
                 [self.receive_buffer_start_offset..self.receive_buffer_slice_end];
+            log::trace!("decode {buffer:?}");
             match self.deserializer.decode(buffer) {
                 Ok((length, message)) => {
                     self.receive_buffer_start_offset += length;

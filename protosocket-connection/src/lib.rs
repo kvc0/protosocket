@@ -7,6 +7,7 @@
 //! or protosocket-server crates.
 
 mod connection;
+mod serde;
 mod types;
 
 pub use connection::Connection;

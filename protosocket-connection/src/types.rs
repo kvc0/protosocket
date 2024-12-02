@@ -4,7 +4,7 @@ pub trait Serializer: Unpin + Send {
     type Message: Send;
 
     /// Encode a message into a buffer.
-    fn encode(&mut self, response: Self::Message, buffer: &mut impl bytes::BufMut);
+    fn encode(&mut self, response: Self::Message, buffer: &mut Vec<u8>);
 }
 
 /// A deserializer takes inbound bytes and produces messages.

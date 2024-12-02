@@ -1,0 +1,27 @@
+[package]
+name = "example-messagepack"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "example-messagepack-server"
+path = "src/server.rs"
+
+[[bin]]
+name = "example-messagepack-client"
+path = "src/client.rs"
+
+[dependencies]
+protosocket             = { workspace = true }
+protosocket-messagepack = { workspace = true }
+protosocket-rpc         = { workspace = true }
+
+bytes                   = { workspace = true }
+env_logger              = { workspace = true }
+futures                 = { workspace = true }
+log                     = { workspace = true }
+serde                   = { workspace = true, features = ["derive"] }
+tokio                   = { workspace = true, features = ["full"] }
+
+histogram               = { version = "0.11" }

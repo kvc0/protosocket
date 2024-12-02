@@ -16,7 +16,7 @@ where
 {
     type Message = Serialized;
 
-    fn encode(&mut self, message: Self::Message, buffer: &mut impl bytes::BufMut) {
+    fn encode(&mut self, message: Self::Message, buffer: &mut Vec<u8>) {
         match message.encode_length_delimited(buffer) {
             Ok(_) => {
                 log::debug!("encoded {message:?}");
