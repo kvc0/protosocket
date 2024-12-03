@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })
         .worker_threads(2)
+        .event_interval(7)
         .enable_all()
         .build()?;
 

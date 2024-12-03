@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicUsize;
+
 use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket_rpc::{
@@ -7,9 +9,25 @@ use protosocket_rpc::{
 
 mod messages;
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    static I: AtomicUsize = AtomicUsize::new(0);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name_fn(|| {
+            format!(
+                "app-{}",
+                I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        })
+        .worker_threads(2)
+        .event_interval(7)
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(run_main())
+}
+
 #[allow(clippy::expect_used)]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let mut server = protosocket_rpc::server::SocketRpcServer::new(
         std::env::var("HOST")
