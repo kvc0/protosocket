@@ -8,6 +8,7 @@ use protosocket::Connection;
 use tokio::sync::mpsc;
 
 use super::connection_server::RpcConnectionServer;
+use super::connection_server::SingleProducer;
 use super::rpc_submitter::RpcSubmitter;
 use super::server_traits::SocketService;
 
@@ -74,6 +75,7 @@ where
                         let (submitter, inbound_messages) = RpcSubmitter::new();
                         let (outbound_messages, outbound_messages_receiver) =
                             mpsc::channel(self.max_queued_outbound_messages);
+                        let outbound_messages = SingleProducer::new(outbound_messages);
                         let connection_service = self.socket_server.new_connection_service(address);
                         let connection_rpc_server = RpcConnectionServer::new(
                             connection_service,

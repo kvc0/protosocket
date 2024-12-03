@@ -10,7 +10,6 @@ use futures::{
     Stream,
 };
 use tokio::sync::mpsc;
-use tokio_util::sync::PollSender;
 
 use crate::{server::RpcKind, Error, Message, ProtosocketControlCode};
 
@@ -26,7 +25,7 @@ where
 {
     connection_server: TConnectionServer,
     inbound: mpsc::UnboundedReceiver<<TConnectionServer as ConnectionService>::Request>,
-    outbound: PollSender<<TConnectionServer as ConnectionService>::Response>,
+    outbound: SingleProducer<<TConnectionServer as ConnectionService>::Response>,
     next_messages_buffer: Vec<<TConnectionServer as ConnectionService>::Request>,
     outstanding_unary_rpcs:
         FuturesUnordered<IdentifiableAbortable<TConnectionServer::UnaryFutureType>>,
@@ -60,6 +59,17 @@ where
     }
 }
 
+/// I take liberties with the sender in the rpc server. The PollSender's reserve feature is quite expensive,
+/// and I can skip paying it by inspecting Sender::capacity(), but only if the sender's capacity is _only_
+/// decreased by the RpcConnectionServer.
+#[derive(Debug)]
+pub(crate) struct SingleProducer<T>(mpsc::Sender<T>);
+impl<T> SingleProducer<T> {
+    pub fn new(sender: mpsc::Sender<T>) -> Self {
+        Self(sender)
+    }
+}
+
 impl<TConnectionServer> RpcConnectionServer<TConnectionServer>
 where
     TConnectionServer: ConnectionService,
@@ -67,12 +77,12 @@ where
     pub fn new(
         connection_server: TConnectionServer,
         inbound: mpsc::UnboundedReceiver<<TConnectionServer as ConnectionService>::Request>,
-        outbound: mpsc::Sender<<TConnectionServer as ConnectionService>::Response>,
+        outbound: SingleProducer<<TConnectionServer as ConnectionService>::Response>,
     ) -> Self {
         Self {
             connection_server,
             inbound,
-            outbound: PollSender::new(outbound),
+            outbound,
             next_messages_buffer: Default::default(),
             outstanding_unary_rpcs: Default::default(),
             outstanding_streaming_rpcs: Default::default(),
@@ -85,18 +95,9 @@ where
         context: &mut Context<'_>,
     ) -> Option<Poll<Result<(), Error>>> {
         loop {
-            match pin!(&mut self.outbound).poll_reserve(context) {
-                Poll::Ready(Ok(())) => {
-                    // ready to send
-                }
-                Poll::Ready(Err(_)) => {
-                    log::debug!("outbound connection is closed");
-                    return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
-                }
-                Poll::Pending => {
-                    log::debug!("no room in outbound connection");
-                    break;
-                }
+            if self.outbound.0.capacity() == 0 {
+                log::debug!("no room in outbound connection");
+                break;
             }
 
             match pin!(&mut self.outstanding_unary_rpcs).poll_next(context) {
@@ -104,9 +105,23 @@ where
                     match unary_done {
                         Some((id, AbortableState::Ready(Ok(response)))) => {
                             self.aborts.remove(&id);
-                            if let Err(_e) = self.outbound.send_item(response) {
-                                log::debug!("outbound connection is closed");
-                                return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
+                            if let Err(e) = self.outbound.0.try_send(response) {
+                                match e {
+                                    mpsc::error::TrySendError::Full(_) => {
+                                        log::error!(
+                                            "bad state: concurrent sender filled outbound buffer"
+                                        );
+                                        return Some(Poll::Ready(Err(
+                                            crate::Error::ConnectionIsClosed,
+                                        )));
+                                    }
+                                    mpsc::error::TrySendError::Closed(_) => {
+                                        log::debug!("outbound connection is closed");
+                                        return Some(Poll::Ready(Err(
+                                            crate::Error::ConnectionIsClosed,
+                                        )));
+                                    }
+                                }
                             }
                         }
                         Some((id, AbortableState::Ready(Err(e)))) => {
@@ -133,13 +148,23 @@ where
                                 Error::Finished => {
                                     log::debug!("{id} unary rpc ended");
                                     if let Some(abort) = abort {
-                                        if let Err(_e) = self.outbound.send_item(
+                                        if let Err(e) = self.outbound.0.try_send(
                                             <TConnectionServer::Response as Message>::ended(id),
                                         ) {
-                                            log::debug!("outbound connection is closed");
-                                            return Some(Poll::Ready(Err(
-                                                crate::Error::ConnectionIsClosed,
-                                            )));
+                                            match e {
+                                                mpsc::error::TrySendError::Full(_) => {
+                                                    log::error!("bad state: concurrent sender filled outbound buffer");
+                                                    return Some(Poll::Ready(Err(
+                                                        crate::Error::ConnectionIsClosed,
+                                                    )));
+                                                }
+                                                mpsc::error::TrySendError::Closed(_) => {
+                                                    log::debug!("outbound connection is closed");
+                                                    return Some(Poll::Ready(Err(
+                                                        crate::Error::ConnectionIsClosed,
+                                                    )));
+                                                }
+                                            }
                                         }
 
                                         abort.mark_aborted();
@@ -181,18 +206,9 @@ where
         context: &mut Context<'_>,
     ) -> Option<Poll<Result<(), Error>>> {
         loop {
-            match pin!(&mut self.outbound).poll_reserve(context) {
-                Poll::Ready(Ok(())) => {
-                    // ready to send
-                }
-                Poll::Ready(Err(_)) => {
-                    log::debug!("outbound connection is closed");
-                    return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
-                }
-                Poll::Pending => {
-                    log::debug!("no room in outbound connection");
-                    break;
-                }
+            if self.outbound.0.capacity() == 0 {
+                log::debug!("no room in outbound connection");
+                break;
             }
 
             match pin!(&mut self.outstanding_streaming_rpcs).poll_next(context) {
@@ -200,9 +216,23 @@ where
                     match streaming_next {
                         Some((id, AbortableState::Ready(Ok(next)))) => {
                             log::debug!("{id} streaming rpc next {next:?}");
-                            if let Err(_e) = self.outbound.send_item(next) {
-                                log::debug!("outbound connection is closed");
-                                return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
+                            if let Err(e) = self.outbound.0.try_send(next) {
+                                match e {
+                                    mpsc::error::TrySendError::Full(_) => {
+                                        log::error!(
+                                            "bad state: concurrent sender filled outbound buffer"
+                                        );
+                                        return Some(Poll::Ready(Err(
+                                            crate::Error::ConnectionIsClosed,
+                                        )));
+                                    }
+                                    mpsc::error::TrySendError::Closed(_) => {
+                                        log::debug!("outbound connection is closed");
+                                        return Some(Poll::Ready(Err(
+                                            crate::Error::ConnectionIsClosed,
+                                        )));
+                                    }
+                                }
                             }
                         }
                         Some((id, AbortableState::Ready(Err(e)))) => {
@@ -229,13 +259,23 @@ where
                                 Error::Finished => {
                                     log::debug!("{id} streaming rpc ended");
                                     if let Some(abort) = abort {
-                                        if let Err(_e) = self.outbound.send_item(
+                                        if let Err(e) = self.outbound.0.try_send(
                                             <TConnectionServer::Response as Message>::ended(id),
                                         ) {
-                                            log::debug!("outbound connection is closed");
-                                            return Some(Poll::Ready(Err(
-                                                crate::Error::ConnectionIsClosed,
-                                            )));
+                                            match e {
+                                                mpsc::error::TrySendError::Full(_) => {
+                                                    log::error!("bad state: concurrent sender filled outbound buffer");
+                                                    return Some(Poll::Ready(Err(
+                                                        crate::Error::ConnectionIsClosed,
+                                                    )));
+                                                }
+                                                mpsc::error::TrySendError::Closed(_) => {
+                                                    log::debug!("outbound connection is closed");
+                                                    return Some(Poll::Ready(Err(
+                                                        crate::Error::ConnectionIsClosed,
+                                                    )));
+                                                }
+                                            }
                                         }
                                         abort.mark_aborted();
                                     }
@@ -460,6 +500,7 @@ mod test {
     ) {
         let (inbound_sender, inbound) = mpsc::unbounded_channel();
         let (outbound, outbound_receiver) = mpsc::channel(outbound_buffer);
+        let outbound = super::SingleProducer(outbound);
         let server = RpcConnectionServer::new(TestConnectionService, inbound, outbound);
         (inbound_sender, outbound_receiver, server)
     }
