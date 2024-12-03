@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use futures::StreamExt;
+use futures::{stream::FuturesUnordered, task::SpawnExt, FutureExt, StreamExt};
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
 use protosocket_rpc::{client::RpcClient, ProtosocketControlCode};
 use tokio::sync::Semaphore;
@@ -123,12 +123,20 @@ async fn generate_traffic(
 ) {
     log::debug!("running traffic generator");
     let mut i = 1;
+    let mut wip = FuturesUnordered::new();
     loop {
-        let permit = concurrent_count
+        let permit = tokio::select! {
+            permit = concurrent_count
             .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore works");
+            .acquire_owned() => {
+                permit.expect("semaphore works")
+            }
+            _ = wip.select_next_some() => {
+                // completed one
+                continue
+            }
+        };
+
         if i % 2 == 0 {
             match client
                 .send_unary(Request {
@@ -149,11 +157,11 @@ async fn generate_traffic(
                     i += 1;
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
-                    tokio::spawn(async move {
+                    wip.spawn(async move {
                         let response = completion.await.expect("response must be successful");
                         handle_response(response, metrics_count, metrics_latency);
                         drop(permit);
-                    });
+                    }).expect("can spawn");
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");
@@ -180,7 +188,7 @@ async fn generate_traffic(
                     i += 1;
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
-                    tokio::spawn(async move {
+                    wip.spawn(async move {
                         while let Some(Ok(response)) = completion.next().await {
                             handle_stream_response(
                                 response,
@@ -189,7 +197,7 @@ async fn generate_traffic(
                             );
                         }
                         drop(permit);
-                    });
+                    }).expect("can spawn");
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");
@@ -244,18 +252,23 @@ fn handle_stream_response(
             log::error!("got a unary response for a stream request");
         }
         Some(EchoResponseKind::Stream(char_response)) => {
+            let places = request_id.ilog(10);
+            let place = places - char_response.sequence as u32;
+            let column = (request_id / 10u64.pow(place)) % 10;
+
             assert_eq!(
-                request_id.to_string()
-                    [(char_response.sequence as usize)..=(char_response.sequence as usize)],
-                char_response.message
+                Ok(column),
+                char_response.message.parse()
             );
 
-            let latency = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time works")
-                .as_nanos() as u64
-                - char_response.nanotime;
-            let _ = metrics_latency.increment(latency);
+            if place == places - 1 {
+                let latency = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("time works")
+                    .as_nanos() as u64
+                    - char_response.nanotime;
+                let _ = metrics_latency.increment(latency);
+            }
         }
         None => {
             log::warn!("no response body");
