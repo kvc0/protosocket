@@ -42,10 +42,12 @@ where
         }
     }
 
+    /// Check if the client is still connected to the server.
+    ///
+    /// We need this is_alive flag to be public so that the client can check if the connection is still alive.
     pub fn is_alive(&self) -> bool {
         self.is_alive.load(std::sync::atomic::Ordering::Relaxed)
     }
-
 
     /// Send a server-streaming rpc to the server.
     ///
