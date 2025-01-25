@@ -42,6 +42,11 @@ where
         }
     }
 
+    pub fn is_alive(&self) -> bool {
+        self.is_alive.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+
     /// Send a server-streaming rpc to the server.
     ///
     /// This function only sends the request. You must consume the completion stream to get the response.
