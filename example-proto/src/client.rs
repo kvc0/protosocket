@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use futures::{stream::FuturesUnordered, task::SpawnExt, FutureExt, StreamExt};
+use futures::{stream::FuturesUnordered, task::SpawnExt, StreamExt};
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
 use protosocket_rpc::{client::RpcClient, ProtosocketControlCode};
 use tokio::sync::Semaphore;
