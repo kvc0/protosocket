@@ -42,6 +42,13 @@ where
         }
     }
 
+    /// Checking this before using the client does not guarantee that the client is still alive when you send  
+    /// your message. It may be useful for connection pool implementations - for example, [bb8::ManageConnection](https://github.com/djc/bb8/blob/09a043c001b3c15514d9f03991cfc87f7118a000/bb8/src/api.rs#L383-L384)'s  
+    /// is_valid and has_broken could be bound to this function to help the pool cycle out broken connections.  
+    pub fn is_alive(&self) -> bool {
+        self.is_alive.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Send a server-streaming rpc to the server.
     ///
     /// This function only sends the request. You must consume the completion stream to get the response.

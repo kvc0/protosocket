@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use futures::{stream::FuturesUnordered, task::SpawnExt, FutureExt, StreamExt};
+use futures::{stream::FuturesUnordered, task::SpawnExt, StreamExt};
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
 use protosocket_rpc::{client::RpcClient, ProtosocketControlCode};
 use tokio::sync::Semaphore;
@@ -161,7 +161,8 @@ async fn generate_traffic(
                         let response = completion.await.expect("response must be successful");
                         handle_response(response, metrics_count, metrics_latency);
                         drop(permit);
-                    }).expect("can spawn");
+                    })
+                    .expect("can spawn");
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");
@@ -197,7 +198,8 @@ async fn generate_traffic(
                             );
                         }
                         drop(permit);
-                    }).expect("can spawn");
+                    })
+                    .expect("can spawn");
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");
@@ -256,10 +258,7 @@ fn handle_stream_response(
             let place = places - char_response.sequence as u32;
             let column = (request_id / 10u64.pow(place)) % 10;
 
-            assert_eq!(
-                Ok(column),
-                char_response.message.parse()
-            );
+            assert_eq!(Ok(column), char_response.message.parse());
 
             if place == places - 1 {
                 let latency = SystemTime::now()
