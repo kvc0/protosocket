@@ -13,41 +13,49 @@ use crate::Message;
 /// Make sure you process this stream quickly, and drop data yourself if you have to. The
 /// server will send data as quickly as it can.
 #[derive(Debug)]
-pub struct StreamingCompletion<Response>
+pub struct StreamingCompletion<Response, Request>
 where
     Response: Message,
+    Request: Message,
 {
     completion: mpsc::UnboundedReceiver<Response>,
-    _completion_guard: CompletionGuard<Response>,
+    completion_guard: CompletionGuard<Response, Request>,
     closed: bool,
     nexts: Vec<Response>,
 }
 
 /// SAFETY: There is no unsafe code in this implementation
-impl<Response> Unpin for StreamingCompletion<Response> where Response: Message {}
+impl<Response, Request> Unpin for StreamingCompletion<Response, Request>
+where
+    Response: Message,
+    Request: Message,
+{
+}
 
 const LIMIT: usize = 16;
 
-impl<Response> StreamingCompletion<Response>
+impl<Response, Request> StreamingCompletion<Response, Request>
 where
     Response: Message,
+    Request: Message,
 {
     pub(crate) fn new(
         completion: mpsc::UnboundedReceiver<Response>,
-        completion_guard: CompletionGuard<Response>,
+        completion_guard: CompletionGuard<Response, Request>,
     ) -> Self {
         Self {
             completion,
-            _completion_guard: completion_guard,
+            completion_guard,
             closed: false,
             nexts: Vec::with_capacity(LIMIT),
         }
     }
 }
 
-impl<Response> futures::Stream for StreamingCompletion<Response>
+impl<Response, Request> futures::Stream for StreamingCompletion<Response, Request>
 where
     Response: Message,
+    Request: Message,
 {
     type Item = crate::Result<Response>;
 
@@ -64,6 +72,7 @@ where
                 Poll::Ready(count) => {
                     if count == 0 {
                         self.closed = true;
+                        self.completion_guard.set_closed();
                         return Poll::Ready(Some(Err(crate::Error::Finished)));
                     }
                     // because it is a vector, we have to consume in reverse order. This is because
