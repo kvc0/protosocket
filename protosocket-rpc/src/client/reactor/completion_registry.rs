@@ -37,21 +37,7 @@ where
         }
     }
 
-    // Explicitly register a new completion
-    #[allow(clippy::expect_used)]
-    #[must_use]
-    pub fn register_completion(
-        &mut self,
-        message_id: u64,
-        completion: Completion<Inbound>,
-    ) -> CompletionGuard<Inbound> {
-        self.in_flight.insert(message_id, completion);
-        CompletionGuard {
-            in_flight_submission: self.in_flight_submission.clone(),
-            message_id,
-        }
-    }
-
+    /// Returns a list of cancelled commands
     pub fn take_new_rpc_lifecycle_actions(&mut self) {
         {
             let mut in_flight_submission = self
@@ -89,16 +75,31 @@ where
 
 /// For removing a tracked rpc from the in-flight map when it is no longer needed
 #[derive(Debug)]
-pub struct CompletionGuard<Inbound>
+pub struct CompletionGuard<Inbound, Outbound>
 where
     Inbound: Message,
+    Outbound: Message,
 {
+    closed: bool,
     in_flight_submission: Arc<Mutex<HashMap<u64, CompletionState<Inbound>>>>,
     message_id: u64,
+    raw_submission_queue: tokio::sync::mpsc::Sender<Outbound>,
 }
-impl<Response> Drop for CompletionGuard<Response>
+
+impl<Inbound, Outbound> CompletionGuard<Inbound, Outbound>
 where
-    Response: Message,
+    Inbound: Message,
+    Outbound: Message,
+{
+    pub fn set_closed(&mut self) {
+        self.closed = true;
+    }
+}
+
+impl<Inbound, Outbound> Drop for CompletionGuard<Inbound, Outbound>
+where
+    Inbound: Message,
+    Outbound: Message,
 {
     fn drop(&mut self) {
         self.in_flight_submission
@@ -106,6 +107,16 @@ where
             .expect("brief internal mutex must work")
             // This doesn't result in a prompt wake of the reactor
             .insert(self.message_id, CompletionState::Done);
+        if !self.closed {
+            if let Err(e) = self
+                .raw_submission_queue
+                .try_send(Outbound::cancelled(self.message_id))
+            {
+                log::error!(
+                    "unable to send cancellation for message - this will abandon server rpcs {e:?}"
+                );
+            }
+        }
     }
 }
 
@@ -127,11 +138,12 @@ where
     // miss the completion.
     #[allow(clippy::expect_used)]
     #[must_use]
-    pub fn register_completion(
+    pub fn register_completion<Outbound: Message>(
         &self,
         message_id: u64,
         completion: Completion<Inbound>,
-    ) -> CompletionGuard<Inbound> {
+        raw_submission_queue: tokio::sync::mpsc::Sender<Outbound>,
+    ) -> CompletionGuard<Inbound, Outbound> {
         self.in_flight_submission
             .lock()
             .expect("brief internal mutex must work")
@@ -139,6 +151,8 @@ where
         CompletionGuard {
             in_flight_submission: self.in_flight_submission.clone(),
             message_id,
+            closed: false,
+            raw_submission_queue,
         }
     }
 }
