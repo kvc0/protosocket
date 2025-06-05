@@ -17,13 +17,17 @@ use crate::{
     would_block, Deserializer, Serializer,
 };
 
-/// A bidirectional, message-oriented tcp stream wrapper.
+/// A bidirectional, message-oriented AsyncRead/AsyncWrite stream wrapper.
 ///
 /// Connections are Futures that you spawn.
 /// To send messages, you push them into the outbound message stream.
-/// To receive messages, you implement a `MessageReactor`. Inbound messages are not
-/// wrapped in a Stream, in order to avoid an extra layer of async buffering. If you
-/// need to buffer messages or forward them to a Stream, you can do so in the reactor.
+/// To receive messages, you implement a `MessageReactor`.
+///
+/// Inbound messages are not wrapped in a Stream, in order to avoid an
+/// extra layer of async buffering. If you need to buffer messages or
+/// forward them to a Stream, you can do so in the reactor. If you can
+/// process them very quickly, you can handle them inline in the reactor
+/// callback `on_messages`, which will let you reply as soon as possible.
 pub struct Connection<Bindings: ConnectionBindings> {
     stream: Bindings::Stream,
     address: std::net::SocketAddr,
@@ -61,16 +65,16 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     ///
     /// 1. Check for read readiness and read into the receive_buffer (up to max_buffer_length).
     /// 2. Deserialize the read bytes into Messages and store them in the inbound_messages queue.
-    /// 3. Process all messages in the inbound queue using the user-provided MessageReactor.
+    /// 3. Dispatch messages as they are deserialized using the user-provided MessageReactor.
     /// 4. Serialize messages from outbound_messages queue, up to max_queued_send_messages.
-    /// 5. Check for write readiness and send serialized messages.
+    /// 5. Send serialized messages.
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        // Step 1: Receive messages and react to them.
+        // Step 1-3: Receive messages and react to them.
         if self.as_mut().poll_receive(context).is_ready() {
             return Poll::Ready(());
         }
 
-        // Step 5: Send outbound messages if the stream is ready for writing
+        // Step 4-5: Serialize and send outbound messages
         match self.poll_writev_buffers(context) {
             Ok(false) => {
                 log::trace!("write stream is empty or registered for wake when writable");
