@@ -1,0 +1,32 @@
+[package]
+name = "example-proto-tls"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "example-proto-server-tls"
+path = "src/server.rs"
+
+[[bin]]
+name = "example-proto-client-tls"
+path = "src/client.rs"
+
+[dependencies]
+protosocket             = { workspace = true }
+protosocket-prost       = { workspace = true }
+protosocket-rpc         = { workspace = true }
+protosocket-server      = { workspace = true }
+
+bytes                   = { workspace = true }
+env_logger              = { workspace = true }
+futures                 = { workspace = true }
+log                     = { workspace = true }
+prost                   = { workspace = true }
+rcgen                   = { workspace = true }
+rustls-pemfile          = { workspace = true }
+rustls-pki-types        = { workspace = true }
+tokio                   = { workspace = true, features = ["full"] }
+tokio-rustls            = { workspace = true }
+
+histogram               = { version = "0.11" }

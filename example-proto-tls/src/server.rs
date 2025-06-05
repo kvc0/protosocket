@@ -1,11 +1,16 @@
-use std::{future::Future, sync::atomic::AtomicUsize};
+use std::{
+    future::Future,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
+use protosocket_prost::ProstSerializer;
 use protosocket_rpc::{
     server::{ConnectionService, RpcKind, SocketService},
     ProtosocketControlCode,
 };
+use rustls_pemfile::Item;
 
 mod messages;
 
@@ -29,11 +34,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[allow(clippy::expect_used)]
 async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
+
+    let cert =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])?;
+    let certpem = cert.cert.pem();
+    let certs: Result<Vec<rustls_pki_types::CertificateDer<'static>>, std::io::Error> =
+        rustls_pemfile::certs(&mut certpem.clone().into_bytes().as_slice()).collect();
+    let certs = certs?;
+
+    let pkpem = cert.key_pair.serialize_pem();
+    let mut keys: Vec<rustls_pki_types::PrivateKeyDer<'static>> =
+        rustls_pemfile::read_all(&mut pkpem.clone().into_bytes().as_slice())
+            .filter_map(|item| item.ok())
+            .filter_map(|item| match item {
+                Item::X509Certificate(_) => {
+                    log::error!("unknown unsupported x509");
+                    None
+                }
+                Item::Pkcs1Key(key) => Some(rustls_pki_types::PrivateKeyDer::Pkcs1(key)),
+                Item::Pkcs8Key(key) => Some(rustls_pki_types::PrivateKeyDer::Pkcs8(key)),
+                Item::Sec1Key(key) => Some(rustls_pki_types::PrivateKeyDer::Sec1(key)),
+                _ => None,
+            })
+            .collect();
+
+    let server_config = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, keys.pop().expect("must have a key"))?;
+
     let mut server = protosocket_rpc::server::SocketRpcServer::new(
         std::env::var("HOST")
             .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
             .parse()?,
-        DemoRpcSocketService,
+        DemoRpcSocketService {
+            tls_acceptor: Arc::new(server_config).into(),
+        },
     )
     .await?;
     server.set_max_queued_outbound_messages(512);
@@ -45,12 +80,14 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// This is the service that will be used to handle new connections.
 /// It doesn't do much; yours might be simple like this too, or it might wire your per-connection
 /// ConnectionServices to application-wide state tracking.
-struct DemoRpcSocketService;
+struct DemoRpcSocketService {
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+}
 impl SocketService for DemoRpcSocketService {
-    type RequestDeserializer = protosocket_messagepack::ProtosocketMessagePackDeserializer<Request>;
-    type ResponseSerializer = protosocket_messagepack::ProtosocketMessagePackSerializer<Response>;
+    type RequestDeserializer = ProstSerializer<Request, Response>;
+    type ResponseSerializer = ProstSerializer<Request, Response>;
     type ConnectionService = DemoRpcConnectionServer;
-    type Stream = tokio::net::TcpStream;
+    type Stream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
 
     fn deserializer(&self) -> Self::RequestDeserializer {
         Self::RequestDeserializer::default()
@@ -69,7 +106,8 @@ impl SocketService for DemoRpcSocketService {
         &self,
         stream: tokio::net::TcpStream,
     ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static {
-        futures::future::ok(stream)
+        let acceptor = self.tls_acceptor.clone();
+        async move { acceptor.accept(stream).await }
     }
 }
 
@@ -92,7 +130,7 @@ impl ConnectionService for DemoRpcConnectionServer {
     ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
-        let behavior = initiating_message.response_behavior;
+        let behavior = initiating_message.response_behavior();
         match initiating_message.body {
             Some(echo) => match behavior {
                 ResponseBehavior::Unary => RpcKind::Unary(echo_request(request_id, echo).boxed()),

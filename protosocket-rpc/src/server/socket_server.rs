@@ -80,20 +80,35 @@ where
                             inbound_messages,
                             outbound_messages,
                         );
+                        let deserializer = self.socket_server.deserializer();
+                        let serializer = self.socket_server.serializer();
+                        let max_buffer_length = self.max_buffer_length;
+                        let max_queued_outbound_messages = self.max_queued_outbound_messages;
 
-                        let connection: Connection<RpcSubmitter<TSocketService>> = Connection::new(
-                            stream,
-                            address,
-                            self.socket_server.deserializer(),
-                            self.socket_server.serializer(),
-                            self.max_buffer_length,
-                            self.max_queued_outbound_messages,
-                            outbound_messages_receiver,
-                            submitter,
-                        );
+                        let stream_future = self.socket_server.connect_stream(stream);
 
-                        tokio::spawn(connection);
-                        tokio::spawn(connection_rpc_server);
+                        tokio::spawn(async move {
+                            match stream_future.await {
+                                Ok(stream) => {
+                                    let connection: Connection<RpcSubmitter<TSocketService>> =
+                                        Connection::new(
+                                            stream,
+                                            address,
+                                            deserializer,
+                                            serializer,
+                                            max_buffer_length,
+                                            max_queued_outbound_messages,
+                                            outbound_messages_receiver,
+                                            submitter,
+                                        );
+                                    tokio::spawn(connection);
+                                    tokio::spawn(connection_rpc_server);
+                                }
+                                Err(e) => {
+                                    log::error!("failed to connect stream: {e:?}");
+                                }
+                            }
+                        });
 
                         continue;
                     }

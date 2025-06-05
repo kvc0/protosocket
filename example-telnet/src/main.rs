@@ -52,6 +52,13 @@ impl ServerConnector for ServerContext {
             outbound: optional_outbound,
         }
     }
+
+    fn connect(
+        &self,
+        stream: tokio::net::TcpStream,
+    ) -> <Self::Bindings as ConnectionBindings>::Stream {
+        stream
+    }
 }
 
 struct StringReactor {
@@ -90,6 +97,7 @@ impl ConnectionBindings for StringContext {
     type Deserializer = StringSerializer;
     type Serializer = StringSerializer;
     type Reactor = StringReactor;
+    type Stream = tokio::net::TcpStream;
 }
 
 struct StringSerializer;

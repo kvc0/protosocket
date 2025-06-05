@@ -11,21 +11,25 @@ use crate::{message::ProtosocketControlCode, Message};
 
 use super::completion_registry::{Completion, CompletionRegistry, RpcRegistrar};
 
-pub struct RpcCompletionConnectionBindings<Serializer, Deserializer>(
-    PhantomData<(Serializer, Deserializer)>,
-);
-impl<Serializer, Deserializer> ConnectionBindings
-    for RpcCompletionConnectionBindings<Serializer, Deserializer>
+pub struct RpcCompletionConnectionBindings<
+    Serializer,
+    Deserializer,
+    TStream = tokio::net::TcpStream,
+>(PhantomData<(Serializer, Deserializer, TStream)>);
+impl<Serializer, Deserializer, TStream> ConnectionBindings
+    for RpcCompletionConnectionBindings<Serializer, Deserializer, TStream>
 where
     Serializer: protosocket::Serializer + 'static,
     Serializer::Message: Message,
     Deserializer: protosocket::Deserializer + 'static,
     Deserializer::Message: Message,
+    TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
     type Deserializer = Deserializer;
     type Serializer = Serializer;
     type Reactor =
         RpcCompletionReactor<Deserializer::Message, DoNothingMessageHandler<Deserializer::Message>>;
+    type Stream = TStream;
 }
 
 #[derive(Debug)]
