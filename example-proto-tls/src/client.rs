@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     sync::{atomic::AtomicUsize, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -7,10 +6,10 @@ use std::{
 use futures::{stream::FuturesUnordered, task::SpawnExt, StreamExt};
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
 use protosocket_rpc::{
-    client::{Configuration, RpcClient, StreamConnector},
+    client::{Configuration, RpcClient, UnverifiedTlsStreamConnector},
     ProtosocketControlCode,
 };
-use tokio::{net::TcpStream, sync::Semaphore};
+use tokio::sync::Semaphore;
 
 mod messages;
 
@@ -31,29 +30,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.block_on(run_main())
 }
 
-struct TlsStreamConnector {
-    connector: tokio_rustls::TlsConnector,
-}
-impl std::fmt::Debug for TlsStreamConnector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsStreamConnector").finish_non_exhaustive()
-    }
-}
-
-impl StreamConnector for TlsStreamConnector {
-    type Stream = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
-
-    fn connect_stream(
-        &self,
-        stream: TcpStream,
-    ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send {
-        self.connector.clone().connect(
-            "localhost".try_into().expect("localhost is a server name"),
-            stream,
-        )
-    }
-}
-
 async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
@@ -62,14 +38,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let max_concurrent = 32;
     let concurrent_count = Arc::new(AtomicUsize::new(0));
-    let client_config = Arc::new(
-        tokio_rustls::rustls::ClientConfig::builder_with_protocol_versions(&[
-            &tokio_rustls::rustls::version::TLS13,
-        ])
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(DoNothingVerifier))
-        .with_no_client_auth(),
-    );
 
     for _i in 0..8 {
         let (client, connection) = protosocket_rpc::client::connect::<
@@ -81,9 +49,9 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "127.0.0.1:9000".to_string())
                 .parse()
                 .expect("must use a valid socket address"),
-            &Configuration::new(TlsStreamConnector {
-                connector: tokio_rustls::TlsConnector::from(client_config.clone()),
-            }),
+            &Configuration::new(UnverifiedTlsStreamConnector::new(
+                "localhost".try_into().expect("must be a valid server name"),
+            )),
         )
         .await?;
         let _connection_handle = tokio::spawn(connection);
@@ -316,52 +284,5 @@ fn handle_stream_response(
         None => {
             log::warn!("no response body");
         }
-    }
-}
-
-// You don't need this if you use a real certificate
-#[derive(Debug)]
-struct DoNothingVerifier;
-impl tokio_rustls::rustls::client::danger::ServerCertVerifier for DoNothingVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls_pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls_pki_types::CertificateDer<'_>],
-        _server_name: &rustls_pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls_pki_types::UnixTime,
-    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
-    {
-        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls_pki_types::CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &rustls_pki_types::CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
-        tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
     }
 }

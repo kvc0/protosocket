@@ -48,3 +48,4 @@ thiserror               = { version = "1.0" }
 tokio                   = { version = "1.39", features = ["net", "rt"] }
 tokio-rustls            = { version = "0.26" }
 tokio-util              = { version = "0.7" }
+webpki-roots            = { version = "1" }
