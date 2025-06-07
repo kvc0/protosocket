@@ -85,7 +85,7 @@ where
                         let max_buffer_length = self.max_buffer_length;
                         let max_queued_outbound_messages = self.max_queued_outbound_messages;
 
-                        let stream_future = self.socket_server.connect_stream(stream);
+                        let stream_future = self.socket_server.accept_stream(stream);
 
                         tokio::spawn(async move {
                             match stream_future.await {

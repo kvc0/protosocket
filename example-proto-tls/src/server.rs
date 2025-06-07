@@ -102,7 +102,7 @@ impl SocketService for DemoRpcSocketService {
         DemoRpcConnectionServer { address }
     }
 
-    fn connect_stream(
+    fn accept_stream(
         &self,
         stream: tokio::net::TcpStream,
     ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static {

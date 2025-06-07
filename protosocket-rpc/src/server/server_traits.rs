@@ -32,7 +32,9 @@ pub trait SocketService: 'static {
     /// Create a new ConnectionService for a new connection.
     fn new_connection_service(&self, address: SocketAddr) -> Self::ConnectionService;
 
-    fn connect_stream(
+    /// Accept and possibly customize the stream for a new connection.
+    /// This is where you can wrap the stream with TLS.
+    fn accept_stream(
         &self,
         stream: tokio::net::TcpStream,
     ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static;
