@@ -1,6 +1,7 @@
 use std::{future::Future, net::SocketAddr};
 
 use protosocket::{Deserializer, Serializer};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::Message;
 
@@ -19,6 +20,9 @@ pub trait SocketService: 'static {
         Request = <Self::RequestDeserializer as Deserializer>::Message,
         Response = <Self::ResponseSerializer as Serializer>::Message,
     >;
+    /// The type of stream that will be used for the connection.
+    /// Something like a `tokio::net::TcpStream` or `tokio_rustls::TlsStream<tokio::net::TcpStream>`.
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
     /// Create a new deserializer for incoming messages.
     fn deserializer(&self) -> Self::RequestDeserializer;
@@ -27,6 +31,13 @@ pub trait SocketService: 'static {
 
     /// Create a new ConnectionService for a new connection.
     fn new_connection_service(&self, address: SocketAddr) -> Self::ConnectionService;
+
+    /// Accept and possibly customize the stream for a new connection.
+    /// This is where you can wrap the stream with TLS.
+    fn accept_stream(
+        &self,
+        stream: tokio::net::TcpStream,
+    ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static;
 }
 
 /// A connection service receives rpcs from clients and sends responses.

@@ -5,7 +5,10 @@ use std::{
 
 use futures::{stream::FuturesUnordered, task::SpawnExt, StreamExt};
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
-use protosocket_rpc::{client::RpcClient, ProtosocketControlCode};
+use protosocket_rpc::{
+    client::{Configuration, RpcClient, TcpStreamConnector},
+    ProtosocketControlCode,
+};
 use tokio::sync::Semaphore;
 
 mod messages;
@@ -33,23 +36,26 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
-    let max_concurrent = 512;
-    let concurrent_count = Arc::new(Semaphore::new(max_concurrent));
-    for _i in 0..2 {
+    let max_concurrent = 32;
+    let concurrent_count = Arc::new(AtomicUsize::new(0));
+    for _i in 0..8 {
         let (client, connection) = protosocket_rpc::client::connect::<
             protosocket_prost::ProstSerializer<Response, Request>,
             protosocket_prost::ProstSerializer<Response, Request>,
+            _,
         >(
             std::env::var("ENDPOINT")
                 .unwrap_or_else(|_| "127.0.0.1:9000".to_string())
                 .parse()
                 .expect("must use a valid socket address"),
-            &Default::default(),
+            &Configuration::new(TcpStreamConnector),
         )
         .await?;
         let _connection_handle = tokio::spawn(connection);
+        let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
         let _client_handle = tokio::spawn(generate_traffic(
             concurrent_count.clone(),
+            concurrency_limit,
             client,
             response_count.clone(),
             latency.clone(),
@@ -60,7 +66,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         response_count,
         latency,
         concurrent_count,
-        max_concurrent,
     ));
 
     tokio::select!(
@@ -81,8 +86,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 async fn print_periodic_metrics(
     response_count: Arc<AtomicUsize>,
     latency: Arc<histogram::AtomicHistogram>,
-    concurrent_count: Arc<Semaphore>,
-    max_concurrent: usize,
+    concurrent_count: Arc<AtomicUsize>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -110,13 +114,14 @@ async fn print_periodic_metrics(
             .map(|b| *b.range().end())
             .unwrap_or_default() as f64
             / 1000.0;
-        let concurrent = max_concurrent - concurrent_count.available_permits();
+        let concurrent = concurrent_count.load(std::sync::atomic::Ordering::Relaxed);
         eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}");
     }
 }
 
 async fn generate_traffic(
-    concurrent_count: Arc<Semaphore>,
+    concurrent_count: Arc<AtomicUsize>,
+    concurrency_limit: Arc<Semaphore>,
     client: RpcClient<Request, Response>,
     metrics_count: Arc<AtomicUsize>,
     metrics_latency: Arc<histogram::AtomicHistogram>,
@@ -126,7 +131,7 @@ async fn generate_traffic(
     let mut wip = FuturesUnordered::new();
     loop {
         let permit = tokio::select! {
-            permit = concurrent_count
+            permit = concurrency_limit
             .clone()
             .acquire_owned() => {
                 permit.expect("semaphore works")
@@ -137,7 +142,7 @@ async fn generate_traffic(
             }
         };
 
-        if i % 2 == 0 {
+        if true {
             match client
                 .send_unary(Request {
                     request_id: i,
@@ -154,12 +159,15 @@ async fn generate_traffic(
                 .await
             {
                 Ok(completion) => {
+                    concurrent_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     i += 1;
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
+                    let concurrent_count: Arc<AtomicUsize> = concurrent_count.clone();
                     wip.spawn(async move {
                         let response = completion.await.expect("response must be successful");
                         handle_response(response, metrics_count, metrics_latency);
+                        concurrent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         drop(permit);
                     })
                     .expect("can spawn");
@@ -170,6 +178,7 @@ async fn generate_traffic(
                 }
             }
         } else {
+            // fixme: the streaming math is wrong
             match client
                 .send_streaming(Request {
                     request_id: i,
@@ -254,7 +263,7 @@ fn handle_stream_response(
             log::error!("got a unary response for a stream request");
         }
         Some(EchoResponseKind::Stream(char_response)) => {
-            let places = request_id.ilog(10);
+            let places = (request_id as f64).log10().ceil() as u32;
             let place = places - char_response.sequence as u32;
             let column = (request_id / 10u64.pow(place)) % 10;
 

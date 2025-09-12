@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicUsize;
+use std::{future::Future, sync::atomic::AtomicUsize};
 
 use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
@@ -50,6 +50,7 @@ impl SocketService for DemoRpcSocketService {
     type RequestDeserializer = protosocket_messagepack::ProtosocketMessagePackDeserializer<Request>;
     type ResponseSerializer = protosocket_messagepack::ProtosocketMessagePackSerializer<Response>;
     type ConnectionService = DemoRpcConnectionServer;
+    type Stream = tokio::net::TcpStream;
 
     fn deserializer(&self) -> Self::RequestDeserializer {
         Self::RequestDeserializer::default()
@@ -62,6 +63,13 @@ impl SocketService for DemoRpcSocketService {
     fn new_connection_service(&self, address: std::net::SocketAddr) -> Self::ConnectionService {
         log::info!("new connection server {address}");
         DemoRpcConnectionServer { address }
+    }
+
+    fn accept_stream(
+        &self,
+        stream: tokio::net::TcpStream,
+    ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static {
+        futures::future::ok(stream)
     }
 }
 

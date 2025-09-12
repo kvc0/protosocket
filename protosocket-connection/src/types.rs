@@ -90,4 +90,6 @@ pub trait ConnectionBindings: 'static {
     type Serializer: Serializer;
     /// The message reactor for this connection.
     type Reactor: MessageReactor<Inbound = <Self::Deserializer as Deserializer>::Message>;
+    /// Bidirectional Stream type to use for this connection. Like `tokio::net::TcpStream`.
+    type Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static;
 }

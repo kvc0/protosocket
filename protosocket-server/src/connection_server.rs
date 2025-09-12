@@ -30,6 +30,11 @@ pub trait ServerConnector: Unpin {
     fn max_queued_outbound_messages(&self) -> usize {
         256
     }
+
+    fn connect(
+        &self,
+        stream: tokio::net::TcpStream,
+    ) -> <Self::Bindings as ConnectionBindings>::Stream;
 }
 
 /// A `protosocket::Connection` is an IO driver. It directly uses tokio's io wrapper of mio to poll
@@ -102,6 +107,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                         let reactor = self
                             .connector
                             .new_reactor(outbound_submission_queue.clone());
+                        let stream = self.connector.connect(stream);
                         let connection: Connection<Connector::Bindings> = Connection::new(
                             stream,
                             address,

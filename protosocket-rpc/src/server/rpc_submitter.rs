@@ -53,4 +53,5 @@ where
     type Deserializer = TSocketService::RequestDeserializer;
     type Serializer = TSocketService::ResponseSerializer;
     type Reactor = RpcSubmitter<TSocketService>;
+    type Stream = TSocketService::Stream;
 }
