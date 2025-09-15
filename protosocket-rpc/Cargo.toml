@@ -17,6 +17,7 @@ futures                 = { workspace = true }
 k-lock                  = { workspace = true }
 log                     = { workspace = true }
 rustls-pki-types        = { workspace = true }
+socket2                 = { workspace = true, features = ["all"] }
 tokio                   = { workspace = true }
 tokio-rustls            = { workspace = true }
 tokio-util              = { workspace = true }

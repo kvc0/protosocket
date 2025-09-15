@@ -57,6 +57,7 @@ pub struct ProtosocketServer<Connector: ServerConnector> {
     connector: Connector,
     listener: tokio::net::TcpListener,
     max_buffer_length: usize,
+    buffer_allocation_interval: usize,
     max_queued_outbound_messages: usize,
     runtime: tokio::runtime::Handle,
 }
@@ -78,6 +79,7 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
             listener,
             max_buffer_length: 16 * (2 << 20),
             max_queued_outbound_messages: 128,
+            buffer_allocation_interval: 1 << 20,
             runtime,
         })
     }
@@ -114,6 +116,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                             self.connector.deserializer(),
                             self.connector.serializer(),
                             self.max_buffer_length,
+                            self.buffer_allocation_interval,
                             self.max_queued_outbound_messages,
                             outbound_messages,
                             reactor,

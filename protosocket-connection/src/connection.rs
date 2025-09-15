@@ -38,6 +38,7 @@ pub struct Connection<Bindings: ConnectionBindings> {
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
     max_buffer_length: usize,
+    buffer_allocation_increment: usize,
     deserializer: Bindings::Deserializer,
     serializer: Bindings::Serializer,
     reactor: Bindings::Reactor,
@@ -125,6 +126,7 @@ where
         deserializer: Bindings::Deserializer,
         serializer: Bindings::Serializer,
         max_buffer_length: usize,
+        buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
         outbound_messages: mpsc::Receiver<<Bindings::Serializer as Serializer>::Message>,
         reactor: Bindings::Reactor,
@@ -140,6 +142,7 @@ where
             receive_buffer: Vec::new(),
             max_buffer_length,
             receive_buffer_unread_index: 0,
+            buffer_allocation_increment,
             deserializer,
             serializer,
             reactor,
@@ -148,12 +151,11 @@ where
 
     /// ensure buffer state and read from the inbound stream
     fn poll_read_inbound(&mut self, context: &mut Context<'_>) -> ReadBufferState {
-        const BUFFER_INCREMENT: usize = 1 << 20;
         if self.receive_buffer.len() < self.max_buffer_length
-            && self.receive_buffer.len() - self.receive_buffer_unread_index < BUFFER_INCREMENT
+            && self.receive_buffer.len() - self.receive_buffer_unread_index < self.buffer_allocation_increment
         {
             self.receive_buffer
-                .resize(self.receive_buffer.len() + BUFFER_INCREMENT, 0);
+                .resize(self.receive_buffer.len() + self.buffer_allocation_increment, 0);
         }
 
         if 0 < self.receive_buffer.len() - self.receive_buffer_unread_index {
