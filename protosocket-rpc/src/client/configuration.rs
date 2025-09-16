@@ -170,6 +170,7 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for DoNothingVerif
 #[derive(Debug, Clone)]
 pub struct Configuration<TStreamConnector> {
     max_buffer_length: usize,
+    buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
     stream_connector: TStreamConnector,
 }
@@ -182,6 +183,7 @@ where
         log::trace!("new client configuration");
         Self {
             max_buffer_length: 4 * (1 << 20), // 4 MiB
+            buffer_allocation_increment: 1 << 20,
             max_queued_outbound_messages: 256,
             stream_connector,
         }
@@ -199,6 +201,13 @@ where
     /// Default: 256
     pub fn max_queued_outbound_messages(&mut self, max_queued_outbound_messages: usize) {
         self.max_queued_outbound_messages = max_queued_outbound_messages;
+    }
+
+    /// Amount of buffer to allocate at one time when buffer needs extension.
+    ///
+    /// Default: 1MiB
+    pub fn buffer_allocation_increment(&mut self, buffer_allocation_increment: usize) {
+        self.buffer_allocation_increment = buffer_allocation_increment;
     }
 }
 
@@ -247,6 +256,7 @@ where
         Deserializer::default(),
         Serializer::default(),
         configuration.max_buffer_length,
+        configuration.buffer_allocation_increment,
         configuration.max_queued_outbound_messages,
         outbound_messages,
         message_reactor,

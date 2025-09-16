@@ -1,3 +1,4 @@
+use std::ffi::c_int;
 use std::future::Future;
 use std::io::Error;
 use std::pin::Pin;
@@ -27,6 +28,7 @@ where
     socket_server: TSocketService,
     listener: tokio::net::TcpListener,
     max_buffer_length: usize,
+    buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
 }
 
@@ -38,13 +40,36 @@ where
     pub async fn new(
         address: std::net::SocketAddr,
         socket_server: TSocketService,
+        max_buffer_length: usize,
+        buffer_allocation_increment: usize,
+        max_queued_outbound_messages: usize,
+        listen_backlog: u32,
     ) -> crate::Result<Self> {
-        let listener = tokio::net::TcpListener::bind(address).await?;
+        let socket = socket2::Socket::new(
+            match address {
+                std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
+                std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
+            },
+            socket2::Type::STREAM,
+            None,
+        )?;
+
+        socket.set_nonblocking(true)?;
+        socket.set_tcp_nodelay(true)?;
+        socket.set_keepalive(true)?;
+        socket.set_reuse_port(true)?;
+        socket.set_reuse_address(true)?;
+
+        socket.bind(&address.into())?;
+        socket.listen(listen_backlog as c_int)?;
+
+        let listener = tokio::net::TcpListener::from_std(socket.into())?;
         Ok(Self {
             socket_server,
             listener,
-            max_buffer_length: 16 * (2 << 20),
-            max_queued_outbound_messages: 128,
+            max_buffer_length,
+            buffer_allocation_increment,
+            max_queued_outbound_messages,
         })
     }
 
@@ -84,6 +109,7 @@ where
                         let serializer = self.socket_server.serializer();
                         let max_buffer_length = self.max_buffer_length;
                         let max_queued_outbound_messages = self.max_queued_outbound_messages;
+                        let buffer_allocation_increment = self.buffer_allocation_increment;
 
                         let stream_future = self.socket_server.accept_stream(stream);
 
@@ -97,6 +123,7 @@ where
                                             deserializer,
                                             serializer,
                                             max_buffer_length,
+                                            buffer_allocation_increment,
                                             max_queued_outbound_messages,
                                             outbound_messages_receiver,
                                             submitter,

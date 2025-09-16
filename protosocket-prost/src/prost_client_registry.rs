@@ -9,6 +9,7 @@ use crate::{ProstClientConnectionBindings, ProstSerializer};
 #[derive(Debug, Clone)]
 pub struct ClientRegistry<TConnector = TcpConnector> {
     max_buffer_length: usize,
+    buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
     runtime: tokio::runtime::Handle,
     stream_connector: TConnector,
@@ -44,6 +45,7 @@ where
         Self {
             max_buffer_length: 4 * (1 << 20),
             max_queued_outbound_messages: 256,
+            buffer_allocation_increment: 1 << 20,
             runtime,
             stream_connector: connector,
         }
@@ -91,6 +93,7 @@ where
             ProstSerializer::default(),
             ProstSerializer::default(),
             self.max_buffer_length,
+            self.buffer_allocation_increment,
             self.max_queued_outbound_messages,
             outbound_messages,
             message_reactor,
