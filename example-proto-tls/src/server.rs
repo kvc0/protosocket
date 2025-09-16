@@ -68,7 +68,12 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
             .parse()?,
         DemoRpcSocketService {
             tls_acceptor: Arc::new(server_config).into(),
+            
         },
+        4 << 20,
+        1 << 20,
+        128,
+        64 << 10,
     )
     .await?;
     server.set_max_queued_outbound_messages(512);
