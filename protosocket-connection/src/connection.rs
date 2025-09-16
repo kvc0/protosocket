@@ -152,10 +152,13 @@ where
     /// ensure buffer state and read from the inbound stream
     fn poll_read_inbound(&mut self, context: &mut Context<'_>) -> ReadBufferState {
         if self.receive_buffer.len() < self.max_buffer_length
-            && self.receive_buffer.len() - self.receive_buffer_unread_index < self.buffer_allocation_increment
+            && self.receive_buffer.len() - self.receive_buffer_unread_index
+                < self.buffer_allocation_increment
         {
-            self.receive_buffer
-                .resize(self.receive_buffer.len() + self.buffer_allocation_increment, 0);
+            self.receive_buffer.resize(
+                self.receive_buffer.len() + self.buffer_allocation_increment,
+                0,
+            );
         }
 
         if 0 < self.receive_buffer.len() - self.receive_buffer_unread_index {
