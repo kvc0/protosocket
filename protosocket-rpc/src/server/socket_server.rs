@@ -1,11 +1,12 @@
+use protosocket::Connection;
+use socket2::TcpKeepalive;
 use std::ffi::c_int;
 use std::future::Future;
 use std::io::Error;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-
-use protosocket::Connection;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::connection_server::RpcConnectionServer;
@@ -44,6 +45,7 @@ where
         buffer_allocation_increment: usize,
         max_queued_outbound_messages: usize,
         listen_backlog: u32,
+        tcp_keepalive_duration: Option<Duration>,
     ) -> crate::Result<Self> {
         let socket = socket2::Socket::new(
             match address {
@@ -54,9 +56,14 @@ where
             None,
         )?;
 
+        let mut tcp_keepalive = TcpKeepalive::new();
+        if let Some(duration) = tcp_keepalive_duration {
+            tcp_keepalive = tcp_keepalive.with_time(duration);
+        }
+
         socket.set_nonblocking(true)?;
         socket.set_tcp_nodelay(true)?;
-        socket.set_keepalive(true)?;
+        socket.set_tcp_keepalive(&tcp_keepalive)?;
         socket.set_reuse_port(true)?;
         socket.set_reuse_address(true)?;
 

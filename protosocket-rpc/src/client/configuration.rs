@@ -1,6 +1,6 @@
-use std::{future::Future, net::SocketAddr, sync::Arc};
-
 use protosocket::Connection;
+use socket2::TcpKeepalive;
+use std::{future::Future, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_rustls::rustls::pki_types::ServerName;
 
@@ -172,6 +172,7 @@ pub struct Configuration<TStreamConnector> {
     max_buffer_length: usize,
     buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
+    tcp_keepalive_duration: Option<std::time::Duration>,
     stream_connector: TStreamConnector,
 }
 
@@ -185,6 +186,7 @@ where
             max_buffer_length: 4 * (1 << 20), // 4 MiB
             buffer_allocation_increment: 1 << 20,
             max_queued_outbound_messages: 256,
+            tcp_keepalive_duration: None,
             stream_connector,
         }
     }
@@ -208,6 +210,13 @@ where
     /// Default: 1MiB
     pub fn buffer_allocation_increment(&mut self, buffer_allocation_increment: usize) {
         self.buffer_allocation_increment = buffer_allocation_increment;
+    }
+
+    /// The duration to set for tcp_keepalive on the underlying socket.
+    ///
+    /// Default: None
+    pub fn tcp_keepalive_duration(&mut self, tcp_keepalive_duration: Option<std::time::Duration>) {
+        self.tcp_keepalive_duration = tcp_keepalive_duration;
     }
 }
 
@@ -233,8 +242,25 @@ where
 {
     log::trace!("new client {address}, {configuration:?}");
 
-    let stream = tokio::net::TcpStream::connect(address).await?;
-    stream.set_nodelay(true)?;
+    let socket = socket2::Socket::new(
+        match address {
+            SocketAddr::V4(_) => socket2::Domain::IPV4,
+            SocketAddr::V6(_) => socket2::Domain::IPV6,
+        },
+        socket2::Type::STREAM,
+        None,
+    )?;
+
+    let mut tcp_keepalive = TcpKeepalive::new();
+    if let Some(duration) = configuration.tcp_keepalive_duration {
+        tcp_keepalive = tcp_keepalive.with_time(duration);
+    }
+
+    socket.set_nonblocking(true)?;
+    socket.set_tcp_nodelay(true)?;
+    socket.set_tcp_keepalive(&tcp_keepalive)?;
+
+    let stream = TcpStream::from_std(socket.into())?;
 
     let message_reactor: RpcCompletionReactor<
         Deserializer::Message,
