@@ -73,6 +73,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         1 << 20,
         128,
         64 << 10,
+        None,
     )
     .await?;
     server.set_max_queued_outbound_messages(512);
