@@ -120,12 +120,23 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RpcRegistrar<Inbound>
 where
     Inbound: Message,
 {
     in_flight_submission: Arc<Mutex<HashMap<u64, CompletionState<Inbound>>>>,
+}
+
+impl<Inbound> Clone for RpcRegistrar<Inbound>
+where
+    Inbound: Message,
+{
+    fn clone(&self) -> Self {
+        Self {
+            in_flight_submission: self.in_flight_submission.clone(),
+        }
+    }
 }
 
 impl<Inbound> RpcRegistrar<Inbound>

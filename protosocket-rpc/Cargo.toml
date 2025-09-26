@@ -16,6 +16,7 @@ protosocket             = { workspace = true }
 futures                 = { workspace = true }
 k-lock                  = { workspace = true }
 log                     = { workspace = true }
+rand                    = { workspace = true }
 rustls-pki-types        = { workspace = true }
 socket2                 = { workspace = true, features = ["all"] }
 tokio                   = { workspace = true }
@@ -26,3 +27,4 @@ webpki-roots            = { workspace = true }
 
 [dev-dependencies]
 prost                   = { workspace = true }
+tokio                   = { workspace = true, features = ["full"] }

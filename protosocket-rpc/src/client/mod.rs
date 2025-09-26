@@ -1,4 +1,5 @@
 mod configuration;
+mod connection_pool;
 mod reactor;
 mod rpc_client;
 
@@ -10,3 +11,6 @@ pub use rpc_client::RpcClient;
 
 pub use reactor::completion_streaming::StreamingCompletion;
 pub use reactor::completion_unary::UnaryCompletion;
+
+pub use connection_pool::ClientConnector;
+pub use connection_pool::ConnectionPool;

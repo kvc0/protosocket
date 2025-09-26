@@ -38,6 +38,7 @@ futures                 = { version = "0.3" }
 k-lock                  = { version = "0.2" }
 log                     = { version = "0.4" }
 prost                   = { version = "0.13" }
+rand                    = { version = "0.9" }
 rcgen                   = { version = "0.13" }
 rmp                     = { version = "0.8" }
 rmp-serde               = { version = "1.3" }

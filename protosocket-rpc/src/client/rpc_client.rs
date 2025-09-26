@@ -14,7 +14,7 @@ use crate::Message;
 /// It handles sending messages to the server and associating the responses.
 /// Messages are sent and received in any order, asynchronously, and support cancellation.
 /// To cancel an RPC, drop the response future.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RpcClient<Request, Response>
 where
     Request: Message,
@@ -24,6 +24,20 @@ where
     in_flight_submission: RpcRegistrar<Response>,
     submission_queue: tokio::sync::mpsc::Sender<Request>,
     is_alive: Arc<AtomicBool>,
+}
+
+impl<Request, Response> Clone for RpcClient<Request, Response>
+where
+    Request: Message,
+    Response: Message,
+{
+    fn clone(&self) -> Self {
+        Self {
+            in_flight_submission: self.in_flight_submission.clone(),
+            submission_queue: self.submission_queue.clone(),
+            is_alive: self.is_alive.clone(),
+        }
+    }
 }
 
 impl<Request, Response> RpcClient<Request, Response>
@@ -111,11 +125,17 @@ where
 mod test {
     use std::future::Future;
     use std::pin::pin;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::task::Context;
     use std::task::Poll;
 
     use futures::task::noop_waker_ref;
+    use tokio::sync::mpsc;
 
+    use crate::client::connection_pool::ClientConnector;
+    use crate::client::connection_pool::ConnectionPool;
     use crate::client::reactor::completion_reactor::DoNothingMessageHandler;
     use crate::client::reactor::completion_reactor::RpcCompletionReactor;
     use crate::Message;
@@ -200,6 +220,160 @@ mod test {
         assert_eq!(
             (1 << 32) + 4,
             remote_end.blocking_recv().expect("a cancel is sent")
+        );
+    }
+
+    #[allow(clippy::type_complexity)]
+    #[derive(Default)]
+    struct TestConnector {
+        clients: Mutex<
+            Vec<(
+                mpsc::Receiver<u64>,
+                RpcClient<u64, u64>,
+                RpcCompletionReactor<u64, DoNothingMessageHandler<u64>>,
+            )>,
+        >,
+        fail_connections: AtomicBool,
+    }
+    impl ClientConnector for Arc<TestConnector> {
+        type Request = u64;
+        type Response = u64;
+
+        async fn connect(self) -> crate::Result<RpcClient<Self::Request, Self::Response>> {
+            if self
+                .fail_connections
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(crate::Error::IoFailure(Arc::new(std::io::Error::other(
+                    "simulated connection failure",
+                ))));
+            }
+            // normally I'd just call `protosocket_rpc::client::connect` in here
+            let (remote_end, client, reactor) = get_client();
+            self.clients
+                .lock()
+                .expect("mutex works")
+                .push((remote_end, client.clone(), reactor));
+
+            Ok(client)
+        }
+    }
+
+    // have to use tokio::test for the connection pool because it uses tokio::spawn
+    #[tokio::test]
+    async fn connection_pool() {
+        let connector = Arc::new(TestConnector::default());
+        let pool = ConnectionPool::new(connector.clone(), 1);
+
+        let rpc_client_a = pool
+            .get_connection()
+            .await
+            .expect("can get a connection from the pool");
+        assert_eq!(
+            1,
+            connector.clients.lock().expect("mutex works").len(),
+            "one connection created"
+        );
+
+        let rpc_client_b = pool
+            .get_connection()
+            .await
+            .expect("can get a connection from the pool");
+        assert_eq!(
+            1,
+            connector.clients.lock().expect("mutex works").len(),
+            "still one connection created"
+        );
+
+        assert!(
+            Arc::ptr_eq(&rpc_client_a.is_alive, &rpc_client_b.is_alive),
+            "same connection shared"
+        );
+
+        let _reply_a = rpc_client_a.send_unary(42).await.expect("can send");
+        let _reply_b = rpc_client_b.send_unary(43).await.expect("can send");
+
+        let (mut remote_end, _client, _reactor) = {
+            let mut clients = connector.clients.lock().expect("mutex works");
+            clients.pop().expect("one client exists")
+        };
+        assert_eq!(42, remote_end.recv().await.expect("request a is received"));
+        assert_eq!(43, remote_end.recv().await.expect("request b is received"));
+    }
+
+    #[tokio::test]
+    async fn connection_pool_reconnect() {
+        let connector = Arc::new(TestConnector::default());
+        let pool = ConnectionPool::new(connector.clone(), 1);
+
+        let rpc_client_a = pool
+            .get_connection()
+            .await
+            .expect("can get a connection from the pool");
+        assert_eq!(
+            1,
+            connector.clients.lock().expect("mutex works").len(),
+            "one connection created"
+        );
+
+        rpc_client_a
+            .is_alive
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        let rpc_client_b = pool.get_connection().await.expect("can get a connection from the pool even when the previous connection is dead, as long as the connection attempt succeeds");
+        assert_eq!(
+            2,
+            connector.clients.lock().expect("mutex works").len(),
+            "a new connection was created, so the connector was asked to make a new connection"
+        );
+        // Note that the connection pool holds a plain Vec of individual clients, so it cannot create more connections than it started with.
+
+        assert!(
+            !Arc::ptr_eq(&rpc_client_a.is_alive, &rpc_client_b.is_alive),
+            "new connection created"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_pool_failure() {
+        let connector = Arc::new(TestConnector::default());
+        let pool = ConnectionPool::new(connector.clone(), 1);
+        connector
+            .fail_connections
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        pool.get_connection().await.expect_err("connection attempt fails, and the calling code gets the error. It does not try forever without surfacing errors.");
+    }
+
+    #[tokio::test]
+    async fn connection_pool_reconnect_failure_recovery() {
+        let connector = Arc::new(TestConnector::default());
+        let pool = ConnectionPool::new(connector.clone(), 1);
+        let rpc_client_a = pool
+            .get_connection()
+            .await
+            .expect("can get a connection from the pool");
+
+        rpc_client_a
+            .is_alive
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        connector
+            .fail_connections
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        pool.get_connection().await.expect_err("connection attempt fails, and the calling code gets the error. It does not try forever without surfacing errors.");
+
+        connector
+            .fail_connections
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        let rpc_client_b = pool
+            .get_connection()
+            .await
+            .expect("can get a connection from the pool now");
+        assert!(
+            !Arc::ptr_eq(&rpc_client_a.is_alive, &rpc_client_b.is_alive),
+            "new connection created"
         );
     }
 }
