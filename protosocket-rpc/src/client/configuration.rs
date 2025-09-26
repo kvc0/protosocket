@@ -1,5 +1,5 @@
 use protosocket::Connection;
-use socket2::TcpKeepalive;
+use socket2::{SockRef, TcpKeepalive};
 use std::{future::Future, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -242,25 +242,17 @@ where
 {
     log::trace!("new client {address}, {configuration:?}");
 
-    let socket = socket2::Socket::new(
-        match address {
-            SocketAddr::V4(_) => socket2::Domain::IPV4,
-            SocketAddr::V6(_) => socket2::Domain::IPV6,
-        },
-        socket2::Type::STREAM,
-        None,
-    )?;
+    let stream = TcpStream::connect(&address).await?;
+    let sf = SockRef::from(&stream);
 
     let mut tcp_keepalive = TcpKeepalive::new();
     if let Some(duration) = configuration.tcp_keepalive_duration {
         tcp_keepalive = tcp_keepalive.with_time(duration);
     }
-
-    socket.set_nonblocking(true)?;
-    socket.set_tcp_nodelay(true)?;
-    socket.set_tcp_keepalive(&tcp_keepalive)?;
-
-    let stream = TcpStream::from_std(socket.into())?;
+    sf.set_tcp_keepalive(&tcp_keepalive)?;
+    sf.set_tcp_nodelay(true)?;
+    sf.set_reuse_address(true)?;
+    sf.set_reuse_port(true)?;
 
     let message_reactor: RpcCompletionReactor<
         Deserializer::Message,
