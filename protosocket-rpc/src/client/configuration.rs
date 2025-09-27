@@ -242,25 +242,19 @@ where
 {
     log::trace!("new client {address}, {configuration:?}");
 
-    let socket = socket2::Socket::new(
-        match address {
-            SocketAddr::V4(_) => socket2::Domain::IPV4,
-            SocketAddr::V6(_) => socket2::Domain::IPV6,
-        },
-        socket2::Type::STREAM,
-        None,
-    )?;
+    let stream = TcpStream::connect(&address).await?;
+
+    // For setting socket configuration options available to socket2
+    let socket = socket2::SockRef::from(&stream);
 
     let mut tcp_keepalive = TcpKeepalive::new();
     if let Some(duration) = configuration.tcp_keepalive_duration {
         tcp_keepalive = tcp_keepalive.with_time(duration);
     }
-
     socket.set_nonblocking(true)?;
-    socket.set_tcp_nodelay(true)?;
     socket.set_tcp_keepalive(&tcp_keepalive)?;
-
-    let stream = TcpStream::from_std(socket.into())?;
+    socket.set_tcp_nodelay(true)?;
+    socket.set_reuse_address(true)?;
 
     let message_reactor: RpcCompletionReactor<
         Deserializer::Message,
