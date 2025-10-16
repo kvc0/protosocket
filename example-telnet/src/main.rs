@@ -47,6 +47,7 @@ impl ServerConnector for ServerContext {
         optional_outbound: tokio::sync::mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
+        _address: std::net::SocketAddr,
     ) -> <Self::Bindings as ConnectionBindings>::Reactor {
         StringReactor {
             outbound: optional_outbound,

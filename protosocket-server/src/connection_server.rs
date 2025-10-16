@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::io::Error;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
@@ -21,6 +22,7 @@ pub trait ServerConnector: Unpin {
         optional_outbound: mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
+        address: SocketAddr,
     ) -> <Self::Bindings as ConnectionBindings>::Reactor;
 
     fn maximum_message_length(&self) -> usize {
@@ -108,7 +110,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                             mpsc::channel(self.max_queued_outbound_messages);
                         let reactor = self
                             .connector
-                            .new_reactor(outbound_submission_queue.clone());
+                            .new_reactor(outbound_submission_queue.clone(), address);
                         let stream = self.connector.connect(stream);
                         let connection: Connection<Connector::Bindings> = Connection::new(
                             stream,
