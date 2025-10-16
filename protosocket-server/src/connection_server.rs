@@ -22,7 +22,7 @@ pub trait ServerConnector: Unpin {
         optional_outbound: mpsc::Sender<
             <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
         >,
-        address: SocketAddr
+        address: SocketAddr,
     ) -> <Self::Bindings as ConnectionBindings>::Reactor;
 
     fn maximum_message_length(&self) -> usize {
