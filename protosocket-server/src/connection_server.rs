@@ -25,14 +25,6 @@ pub trait ServerConnector: Unpin {
         address: SocketAddr,
     ) -> <Self::Bindings as ConnectionBindings>::Reactor;
 
-    fn maximum_message_length(&self) -> usize {
-        4 * (2 << 20)
-    }
-
-    fn max_queued_outbound_messages(&self) -> usize {
-        256
-    }
-
     fn connect(
         &self,
         stream: tokio::net::TcpStream,
@@ -94,6 +86,11 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
     /// Set the maximum queued outbound messages for connections created by this server after the setting is applied.
     pub fn set_max_queued_outbound_messages(&mut self, max_queued_outbound_messages: usize) {
         self.max_queued_outbound_messages = max_queued_outbound_messages;
+    }
+
+    /// Set the step size for allocating additional memory for connection buffers created by this server after the setting is applied.
+    pub fn set_buffer_allocation_increment(&mut self, buffer_allocation_increment: usize) {
+        self.buffer_allocation_increment = buffer_allocation_increment;
     }
 }
 
