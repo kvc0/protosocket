@@ -7,7 +7,7 @@ use std::{
 use protosocket::{
     ConnectionBindings, DeserializeError, Deserializer, MessageReactor, ReactorStatus, Serializer,
 };
-use protosocket_server::{ProtosocketServer, ServerConnector};
+use protosocket_server::{ProtosocketServer, ProtosocketServerConfig, ServerConnector};
 
 #[allow(clippy::expect_used)]
 #[tokio::main]
@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "127.0.0.1:9000".parse()?,
         tokio::runtime::Handle::current(),
         server_context,
+        ProtosocketServerConfig::default(),
     )
     .await?;
 

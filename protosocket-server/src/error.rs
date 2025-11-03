@@ -13,3 +13,9 @@ pub enum Error {
     #[error("Requested resource was dead: ({0})")]
     Dead(&'static str),
 }
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::IoFailure(Arc::new(e))
+    }
+}

@@ -1,14 +1,14 @@
+use protosocket::Connection;
+use protosocket::ConnectionBindings;
+use protosocket::Serializer;
+use socket2::TcpKeepalive;
+use std::ffi::c_int;
 use std::future::Future;
 use std::io::Error;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-
-use protosocket::Connection;
-use protosocket::ConnectionBindings;
-use protosocket::Serializer;
 use tokio::sync::mpsc;
 
 pub trait ServerConnector: Unpin {
@@ -56,24 +56,120 @@ pub struct ProtosocketServer<Connector: ServerConnector> {
     runtime: tokio::runtime::Handle,
 }
 
+pub struct ProtosocketSocketConfig {
+    nodelay: bool,
+    reuse: bool,
+    keepalive_duration: Option<std::time::Duration>,
+    listen_backlog: u32,
+}
+
+impl ProtosocketSocketConfig {
+    pub fn nodelay(mut self, nodelay: bool) -> Self {
+        self.nodelay = nodelay;
+        self
+    }
+    pub fn reuse(mut self, reuse: bool) -> Self {
+        self.reuse = reuse;
+        self
+    }
+    pub fn keepalive_duration(mut self, keepalive_duration: std::time::Duration) -> Self {
+        self.keepalive_duration = Some(keepalive_duration);
+        self
+    }
+    pub fn listen_backlog(mut self, backlog: u32) -> Self {
+        self.listen_backlog = backlog;
+        self
+    }
+}
+
+impl Default for ProtosocketSocketConfig {
+    fn default() -> Self {
+        Self {
+            nodelay: true,
+            reuse: true,
+            keepalive_duration: None,
+            listen_backlog: 65536,
+        }
+    }
+}
+
+pub struct ProtosocketServerConfig {
+    max_buffer_length: usize,
+    max_queued_outbound_messages: usize,
+    buffer_allocation_increment: usize,
+    socket_config: ProtosocketSocketConfig,
+}
+
+impl ProtosocketServerConfig {
+    pub fn max_buffer_length(mut self, max_buffer_length: usize) -> Self {
+        self.max_buffer_length = max_buffer_length;
+        self
+    }
+    pub fn max_queued_outbound_messages(mut self, max_queued_outbound_messages: usize) -> Self {
+        self.max_queued_outbound_messages = max_queued_outbound_messages;
+        self
+    }
+    pub fn buffer_allocation_increment(mut self, buffer_allocation_increment: usize) -> Self {
+        self.buffer_allocation_increment = buffer_allocation_increment;
+        self
+    }
+    pub fn socket_config(mut self, config: ProtosocketSocketConfig) -> Self {
+        self.socket_config = config;
+        self
+    }
+}
+
+impl Default for ProtosocketServerConfig {
+    fn default() -> Self {
+        Self {
+            max_buffer_length: 16 * (2 << 20),
+            max_queued_outbound_messages: 128,
+            buffer_allocation_increment: 1 << 20,
+            socket_config: Default::default(),
+        }
+    }
+}
+
 impl<Connector: ServerConnector> ProtosocketServer<Connector> {
     /// Construct a new `ProtosocketServer` listening on the provided address.
     /// The address will be bound and listened upon with `SO_REUSEADDR` set.
     /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
     pub async fn new(
-        address: std::net::SocketAddr,
+        address: SocketAddr,
         runtime: tokio::runtime::Handle,
         connector: Connector,
+        config: ProtosocketServerConfig,
     ) -> crate::Result<Self> {
-        let listener = tokio::net::TcpListener::bind(address)
-            .await
-            .map_err(Arc::new)?;
+        let socket = socket2::Socket::new(
+            match address {
+                SocketAddr::V4(_) => socket2::Domain::IPV4,
+                SocketAddr::V6(_) => socket2::Domain::IPV6,
+            },
+            socket2::Type::STREAM,
+            None,
+        )?;
+
+        let mut tcp_keepalive = TcpKeepalive::new();
+        if let Some(duration) = config.socket_config.keepalive_duration {
+            tcp_keepalive = tcp_keepalive.with_time(duration);
+        }
+
+        socket.set_nonblocking(true)?;
+        socket.set_tcp_nodelay(config.socket_config.nodelay)?;
+        socket.set_tcp_keepalive(&tcp_keepalive)?;
+        socket.set_reuse_port(config.socket_config.reuse)?;
+        socket.set_reuse_address(config.socket_config.reuse)?;
+
+        socket.bind(&address.into())?;
+        socket.listen(config.socket_config.listen_backlog as c_int)?;
+
+        let listener = tokio::net::TcpListener::from_std(socket.into())?;
         Ok(Self {
             connector,
             listener,
-            max_buffer_length: 16 * (2 << 20),
-            max_queued_outbound_messages: 128,
-            buffer_allocation_increment: 1 << 20,
+            max_buffer_length: config.max_buffer_length,
+            max_queued_outbound_messages: config.max_queued_outbound_messages,
+            buffer_allocation_increment: config.buffer_allocation_increment,
             runtime,
         })
     }
