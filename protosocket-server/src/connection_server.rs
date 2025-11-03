@@ -47,6 +47,8 @@ pub trait ServerConnector: Unpin {
 /// connection - you decide what those mean for you!
 ///
 /// A ProtosocketServer is a future: You spawn it and it runs forever.
+///
+/// Construct a new ProtosocketServer by creating a ProtosocketServerConfig and calling the {{bind_tcp}} method.
 pub struct ProtosocketServer<Connector: ServerConnector> {
     connector: Connector,
     listener: tokio::net::TcpListener,
@@ -56,6 +58,7 @@ pub struct ProtosocketServer<Connector: ServerConnector> {
     runtime: tokio::runtime::Handle,
 }
 
+/// Socket configuration options for a ProtosocketServer.
 pub struct ProtosocketSocketConfig {
     nodelay: bool,
     reuse: bool,
@@ -64,18 +67,22 @@ pub struct ProtosocketSocketConfig {
 }
 
 impl ProtosocketSocketConfig {
+    /// Whether nodelay should be set on the socket.
     pub fn nodelay(mut self, nodelay: bool) -> Self {
         self.nodelay = nodelay;
         self
     }
+    /// Whether reuseaddr and reuseport should be set on the socket.
     pub fn reuse(mut self, reuse: bool) -> Self {
         self.reuse = reuse;
         self
     }
+    /// The keepalive window to be set on the socket.
     pub fn keepalive_duration(mut self, keepalive_duration: std::time::Duration) -> Self {
         self.keepalive_duration = Some(keepalive_duration);
         self
     }
+    /// The backlog to be set on the socket when invoking `listen`.
     pub fn listen_backlog(mut self, backlog: u32) -> Self {
         self.listen_backlog = backlog;
         self
@@ -101,21 +108,36 @@ pub struct ProtosocketServerConfig {
 }
 
 impl ProtosocketServerConfig {
+    /// The maximum buffer length per connection on this server.
     pub fn max_buffer_length(mut self, max_buffer_length: usize) -> Self {
         self.max_buffer_length = max_buffer_length;
         self
     }
+    /// The maximum number of queued outbound messages per connection on this server.
     pub fn max_queued_outbound_messages(mut self, max_queued_outbound_messages: usize) -> Self {
         self.max_queued_outbound_messages = max_queued_outbound_messages;
         self
     }
+    /// The step size for allocating additional memory for connection buffers on this server.
     pub fn buffer_allocation_increment(mut self, buffer_allocation_increment: usize) -> Self {
         self.buffer_allocation_increment = buffer_allocation_increment;
         self
     }
+    /// The tcp socket configuration options for this server.
     pub fn socket_config(mut self, config: ProtosocketSocketConfig) -> Self {
         self.socket_config = config;
         self
+    }
+
+    /// Binds a tcp listener to the given address and returns a ProtosocketServer with this configuration.
+    /// After binding, you must await the returned server future to process requests.
+    pub async fn bind_tcp<Connector: ServerConnector>(
+        self,
+        address: SocketAddr,
+        connector: Connector,
+        runtime: tokio::runtime::Handle,
+    ) -> crate::Result<ProtosocketServer<Connector>> {
+        ProtosocketServer::new(address, runtime, connector, self).await
     }
 }
 
@@ -134,7 +156,7 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
     /// Construct a new `ProtosocketServer` listening on the provided address.
     /// The address will be bound and listened upon with `SO_REUSEADDR` set.
     /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
-    pub async fn new(
+    async fn new(
         address: SocketAddr,
         runtime: tokio::runtime::Handle,
         connector: Connector,
@@ -172,21 +194,6 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
             buffer_allocation_increment: config.buffer_allocation_increment,
             runtime,
         })
-    }
-
-    /// Set the maximum buffer length for connections created by this server after the setting is applied.
-    pub fn set_max_buffer_length(&mut self, max_buffer_length: usize) {
-        self.max_buffer_length = max_buffer_length;
-    }
-
-    /// Set the maximum queued outbound messages for connections created by this server after the setting is applied.
-    pub fn set_max_queued_outbound_messages(&mut self, max_queued_outbound_messages: usize) {
-        self.max_queued_outbound_messages = max_queued_outbound_messages;
-    }
-
-    /// Set the step size for allocating additional memory for connection buffers created by this server after the setting is applied.
-    pub fn set_buffer_allocation_increment(&mut self, buffer_allocation_increment: usize) {
-        self.buffer_allocation_increment = buffer_allocation_increment;
     }
 }
 
