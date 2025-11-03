@@ -853,6 +853,7 @@ dependencies = [
  "futures",
  "log",
  "protosocket",
+ "socket2 0.6.0",
  "thiserror",
  "tokio",
 ]

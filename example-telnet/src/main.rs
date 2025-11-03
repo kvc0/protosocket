@@ -7,7 +7,7 @@ use std::{
 use protosocket::{
     ConnectionBindings, DeserializeError, Deserializer, MessageReactor, ReactorStatus, Serializer,
 };
-use protosocket_server::{ProtosocketServer, ServerConnector};
+use protosocket_server::{ProtosocketServerConfig, ServerConnector};
 
 #[allow(clippy::expect_used)]
 #[tokio::main]
@@ -15,12 +15,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let server_context = ServerContext::default();
-    let server = ProtosocketServer::new(
-        "127.0.0.1:9000".parse()?,
-        tokio::runtime::Handle::current(),
-        server_context,
-    )
-    .await?;
+    let config = ProtosocketServerConfig::default();
+    let server = config
+        .bind_tcp(
+            "127.0.0.1:9000".parse()?,
+            server_context,
+            tokio::runtime::Handle::current(),
+        )
+        .await?;
 
     tokio::spawn(server).await??;
     Ok(())
