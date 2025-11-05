@@ -61,6 +61,16 @@ impl<Connector: ClientConnector> ConnectionPool<Connector> {
         }
     }
 
+    /// Get a consistent connection from the pool for a given key.
+    pub async fn get_connection_for_key(
+        &self,
+        key: usize,
+    ) -> crate::Result<RpcClient<Connector::Request, Connector::Response>> {
+        let slot = key % self.connections.len();
+
+        self.get_connection_by_slot(slot).await
+    }
+
     /// Get a connection from the pool.
     pub async fn get_connection(
         &self,
@@ -72,6 +82,14 @@ impl<Connector: ClientConnector> ConnectionPool<Connector> {
         // Safety: This is executed on a thread, in only one place. It cannot be borrowed anywhere else.
         let slot = THREAD_LOCAL_SMALL_RANDOM
             .with_borrow_mut(|rng| rng.random_range(0..self.connections.len()));
+
+        self.get_connection_by_slot(slot).await
+    }
+
+    async fn get_connection_by_slot(
+        &self,
+        slot: usize,
+    ) -> crate::Result<RpcClient<Connector::Request, Connector::Response>> {
         let connection_state = &self.connections[slot];
 
         // The connection state requires a mutex, so I need to keep await out of the scope to satisfy clippy (and for paranoia).
