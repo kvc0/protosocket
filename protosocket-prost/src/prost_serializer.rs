@@ -1,22 +1,20 @@
 use std::marker::PhantomData;
 
-use protosocket::{DeserializeError, Deserializer, Serializer};
+use protosocket::{pooled_encoder::Serialize, Decoder, DeserializeError};
 
-/// A stateless implementation of protosocket's `Serializer` and `Deserializer`
-/// traits using `prost` for encoding and decoding protocol buffers messages.
+/// A stateless implementation of `Serialize` using `prost`
 #[derive(Default, Debug)]
-pub struct ProstSerializer<Deserialized, Serialized> {
-    pub(crate) _phantom: PhantomData<(Deserialized, Serialized)>,
+pub struct ProstSerializer<Message> {
+    _phantom: PhantomData<Message>,
 }
 
-impl<Deserialized, Serialized> Serializer for ProstSerializer<Deserialized, Serialized>
+impl<Message> Serialize for ProstSerializer<Message>
 where
-    Deserialized: prost::Message + Default + Unpin,
-    Serialized: prost::Message + Unpin,
+    Message: prost::Message,
 {
-    type Message = Serialized;
+    type Message = Message;
 
-    fn encode(&mut self, message: Self::Message, buffer: &mut Vec<u8>) {
+    fn serialize_into_buffer(&mut self, message: Self::Message, buffer: &mut Vec<u8>) {
         match message.encode_length_delimited(buffer) {
             Ok(_) => {
                 log::debug!("encoded {message:?}");
@@ -27,12 +25,17 @@ where
         }
     }
 }
-impl<Deserialized, Serialized> Deserializer for ProstSerializer<Deserialized, Serialized>
+
+/// A stateless implementation of `Decoder` using `prost`
+#[derive(Debug, Default)]
+pub struct ProstDecoder<Message> {
+    _phantom: PhantomData<Message>,
+}
+impl<Message> Decoder for ProstDecoder<Message>
 where
-    Deserialized: prost::Message + Default + Unpin,
-    Serialized: prost::Message + Unpin,
+    Message: prost::Message + Default,
 {
-    type Message = Deserialized;
+    type Message = Message;
 
     fn decode(
         &mut self,

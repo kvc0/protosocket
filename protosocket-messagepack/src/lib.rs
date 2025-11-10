@@ -1,11 +1,11 @@
 use std::{io::Read, marker::PhantomData};
 
 #[derive(Debug)]
-pub struct ProtosocketMessagePackSerializer<T> {
+pub struct MessagePackSerializer<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> Default for ProtosocketMessagePackSerializer<T> {
+impl<T> Default for MessagePackSerializer<T> {
     fn default() -> Self {
         Self {
             _phantom: PhantomData,
@@ -13,13 +13,13 @@ impl<T> Default for ProtosocketMessagePackSerializer<T> {
     }
 }
 
-impl<T> protosocket::Serializer for ProtosocketMessagePackSerializer<T>
+impl<T> protosocket::pooled_encoder::Serialize for MessagePackSerializer<T>
 where
-    T: serde::Serialize + Send + Unpin + std::fmt::Debug,
+    T: serde::Serialize + std::fmt::Debug,
 {
     type Message = T;
 
-    fn encode(&mut self, message: Self::Message, buffer: &mut Vec<u8>) {
+    fn serialize_into_buffer(&mut self, message: Self::Message, buffer: &mut Vec<u8>) {
         log::debug!("encoding {message:?}");
         // reserve length prefix
         buffer.extend_from_slice(&[0; 5]);
@@ -36,12 +36,12 @@ where
 }
 
 #[derive(Debug)]
-pub struct ProtosocketMessagePackDeserializer<T> {
+pub struct ProtosocketMessagePackDecoder<T> {
     _phantom: std::marker::PhantomData<T>,
     state: State,
 }
 
-impl<T> Default for ProtosocketMessagePackDeserializer<T> {
+impl<T> Default for ProtosocketMessagePackDecoder<T> {
     fn default() -> Self {
         Self {
             _phantom: PhantomData,
@@ -57,9 +57,9 @@ enum State {
     ReadingLength(u32),
 }
 
-impl<T> protosocket::Deserializer for ProtosocketMessagePackDeserializer<T>
+impl<T> protosocket::Decoder for ProtosocketMessagePackDecoder<T>
 where
-    T: serde::de::DeserializeOwned + Send + Unpin + std::fmt::Debug,
+    T: serde::de::DeserializeOwned + std::fmt::Debug,
 {
     type Message = T;
 

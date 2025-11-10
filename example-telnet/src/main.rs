@@ -1,12 +1,11 @@
 use std::{
+    collections::VecDeque,
     io::Read,
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
 
-use protosocket::{
-    ConnectionBindings, DeserializeError, Deserializer, MessageReactor, ReactorStatus, Serializer,
-};
+use protosocket::{Decoder, DeserializeError, Encoder, MessageReactor, ReactorStatus};
 use protosocket_server::{ProtosocketServerConfig, ServerConnector};
 
 #[allow(clippy::expect_used)]
@@ -17,11 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_context = ServerContext::default();
     let config = ProtosocketServerConfig::default();
     let server = config
-        .bind_tcp(
-            "127.0.0.1:9000".parse()?,
-            server_context,
-            tokio::runtime::Handle::current(),
-        )
+        .bind_tcp("127.0.0.1:9000".parse()?, server_context)
         .await?;
 
     tokio::spawn(server).await??;
@@ -34,33 +29,43 @@ struct ServerContext {
 }
 
 impl ServerConnector for ServerContext {
-    type Bindings = StringContext;
+    type Encoder = StringSerializer;
+    type Decoder = StringSerializer;
+    type Reactor = StringReactor;
+    type Stream = tokio::net::TcpStream;
 
-    fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer {
+    fn encoder(&self) -> Self::Encoder {
         StringSerializer
     }
 
-    fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer {
+    fn decoder(&self) -> Self::Decoder {
         StringSerializer
     }
 
     fn new_reactor(
         &self,
-        optional_outbound: tokio::sync::mpsc::Sender<
-            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
-        >,
+        optional_outbound: tokio::sync::mpsc::Sender<<Self::Encoder as Encoder>::Message>,
         _address: std::net::SocketAddr,
-    ) -> <Self::Bindings as ConnectionBindings>::Reactor {
+    ) -> Self::Reactor {
         StringReactor {
             outbound: optional_outbound,
         }
     }
 
-    fn connect(
-        &self,
-        stream: tokio::net::TcpStream,
-    ) -> <Self::Bindings as ConnectionBindings>::Stream {
+    fn connect(&self, stream: tokio::net::TcpStream) -> Self::Stream {
         stream
+    }
+
+    fn spawn_connection(
+        &self,
+        connection: protosocket::Connection<
+            Self::Stream,
+            Self::Decoder,
+            Self::Encoder,
+            Self::Reactor,
+        >,
+    ) {
+        tokio::spawn(connection);
     }
 }
 
@@ -70,50 +75,37 @@ struct StringReactor {
 impl MessageReactor for StringReactor {
     type Inbound = String;
 
-    fn on_inbound_messages(
-        &mut self,
-        messages: impl IntoIterator<Item = Self::Inbound>,
-    ) -> ReactorStatus {
-        for mut message in messages.into_iter() {
-            let outbound = self.outbound.clone();
-            tokio::spawn(async move {
-                let seconds: u64 = message
-                    .split_ascii_whitespace()
-                    .next()
-                    .unwrap_or("0")
-                    .parse()
-                    .unwrap_or(0);
-                tokio::time::sleep(Duration::from_secs(seconds)).await;
-                message.push_str(" RAN");
-                if let Err(e) = outbound.send(message).await {
-                    log::error!("send error: {e:?}");
-                }
-            });
-        }
+    fn on_inbound_message(&mut self, mut message: Self::Inbound) -> ReactorStatus {
+        let outbound = self.outbound.clone();
+        tokio::spawn(async move {
+            let seconds: u64 = message
+                .split_ascii_whitespace()
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
+            tokio::time::sleep(Duration::from_secs(seconds)).await;
+            message.push_str(" RAN");
+            if let Err(e) = outbound.send(message).await {
+                log::error!("send error: {e:?}");
+            }
+        });
         ReactorStatus::Continue
     }
 }
 
-struct StringContext;
-
-impl ConnectionBindings for StringContext {
-    type Deserializer = StringSerializer;
-    type Serializer = StringSerializer;
-    type Reactor = StringReactor;
-    type Stream = tokio::net::TcpStream;
-}
-
 struct StringSerializer;
 
-impl Serializer for StringSerializer {
+impl Encoder for StringSerializer {
     type Message = String;
+    type Serialized = VecDeque<u8>;
 
-    fn encode(&mut self, mut response: Self::Message, buffer: &mut Vec<u8>) {
+    fn encode(&mut self, mut response: Self::Message) -> Self::Serialized {
         response.push_str(" ENCODED\n");
-        buffer.extend_from_slice(response.as_bytes());
+        response.into_bytes().into()
     }
 }
-impl Deserializer for StringSerializer {
+impl Decoder for StringSerializer {
     type Message = String;
 
     fn decode(

@@ -1,9 +1,9 @@
 use std::future::Future;
 
-use protosocket::{Connection, MessageReactor};
+use protosocket::{pooled_encoder::PooledEncoder, Connection, MessageReactor};
 use tokio::{net::TcpStream, sync::mpsc};
 
-use crate::{ProstClientConnectionBindings, ProstSerializer};
+use crate::{prost_serializer::ProstDecoder, ProstSerializer};
 
 /// A factory for creating client connections to a `protosocket` server.
 #[derive(Debug, Clone)]
@@ -74,7 +74,7 @@ where
         Response: prost::Message + Default + Unpin + 'static,
         Reactor: MessageReactor<Inbound = Response>,
     {
-        let address = address.into().parse()?;
+        let address: std::net::SocketAddr = address.into().parse()?;
         let stream = TcpStream::connect(address)
             .await
             .map_err(std::sync::Arc::new)?;
@@ -86,12 +86,14 @@ where
             .map_err(std::sync::Arc::new)?;
         let (outbound, outbound_messages) = mpsc::channel(self.max_queued_outbound_messages);
         let connection = Connection::<
-            ProstClientConnectionBindings<Request, Response, Reactor, TConnector::Stream>,
+            TConnector::Stream,
+            ProstDecoder<Response>,
+            PooledEncoder<ProstSerializer<Request>>,
+            Reactor,
         >::new(
             stream,
-            address,
-            ProstSerializer::default(),
-            ProstSerializer::default(),
+            Default::default(),
+            Default::default(),
             self.max_buffer_length,
             self.buffer_allocation_increment,
             self.max_queued_outbound_messages,

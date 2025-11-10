@@ -5,32 +5,11 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use protosocket::{ConnectionBindings, MessageReactor, ReactorStatus};
+use protosocket::{MessageReactor, ReactorStatus};
 
 use crate::{message::ProtosocketControlCode, Message};
 
 use super::completion_registry::{Completion, CompletionRegistry, RpcRegistrar};
-
-pub struct RpcCompletionConnectionBindings<
-    Serializer,
-    Deserializer,
-    TStream = tokio::net::TcpStream,
->(PhantomData<(Serializer, Deserializer, TStream)>);
-impl<Serializer, Deserializer, TStream> ConnectionBindings
-    for RpcCompletionConnectionBindings<Serializer, Deserializer, TStream>
-where
-    Serializer: protosocket::Serializer + 'static,
-    Serializer::Message: Message,
-    Deserializer: protosocket::Deserializer + 'static,
-    Deserializer::Message: Message,
-    TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
-{
-    type Deserializer = Deserializer;
-    type Serializer = Serializer;
-    type Reactor =
-        RpcCompletionReactor<Deserializer::Message, DoNothingMessageHandler<Deserializer::Message>>;
-    type Stream = TStream;
-}
 
 #[derive(Debug)]
 pub struct RpcCompletionReactor<Inbound, TUnregisteredMessageHandler>
@@ -86,50 +65,43 @@ where
 {
     type Inbound = Inbound;
 
-    fn on_inbound_messages(
-        &mut self,
-        messages: impl IntoIterator<Item = Self::Inbound>,
-    ) -> ReactorStatus {
+    fn on_inbound_message(&mut self, message: Self::Inbound) -> ReactorStatus {
         self.rpc_registry.take_new_rpc_lifecycle_actions();
 
-        for message_from_the_network in messages.into_iter() {
-            let message_id_from_the_network = message_from_the_network.message_id();
-            match message_from_the_network.control_code() {
-                ProtosocketControlCode::Normal => (),
-                ProtosocketControlCode::Cancel => {
-                    log::debug!("{message_id_from_the_network} cancelling command");
-                    self.rpc_registry.deregister(message_id_from_the_network);
-                    continue;
-                }
-                ProtosocketControlCode::End => {
-                    log::debug!("{message_id_from_the_network} command end of stream");
-                    self.rpc_registry.deregister(message_id_from_the_network);
-                    continue;
+        let message_id = message.message_id();
+        match message.control_code() {
+            ProtosocketControlCode::Normal => (),
+            ProtosocketControlCode::Cancel => {
+                log::debug!("{message_id} cancelling command");
+                self.rpc_registry.deregister(message_id);
+                return ReactorStatus::Continue;
+            }
+            ProtosocketControlCode::End => {
+                log::debug!("{message_id} command end of stream");
+                self.rpc_registry.deregister(message_id);
+                return ReactorStatus::Continue;
+            }
+        }
+        match self.rpc_registry.entry(message_id) {
+            Entry::Occupied(mut registered_rpc) => {
+                if let Completion::RemoteStreaming(stream) = registered_rpc.get_mut() {
+                    if let Err(e) = stream.send(message) {
+                        log::debug!("{message_id} completion channel closed - did the client lose interest in this request? {e:?}");
+                        registered_rpc.remove();
+                    }
+                } else if let Completion::Unary(completion) = registered_rpc.remove() {
+                    if let Err(e) = completion.send(Ok(message)) {
+                        log::debug!("{message_id} completion channel closed - did the client lose interest in this request? {e:?}");
+                    }
+                } else {
+                    panic!("{message_id} unexpected command response type. Sorry, I wanted to borrow for streaming and remove by value for unary without doing 2 map lookups, so I couldn't match");
                 }
             }
-            match self.rpc_registry.entry(message_id_from_the_network) {
-                Entry::Occupied(mut registered_rpc) => {
-                    if let Completion::RemoteStreaming(stream) = registered_rpc.get_mut() {
-                        if let Err(e) = stream.send(message_from_the_network) {
-                            log::debug!("{message_id_from_the_network} completion channel closed - did the client lose interest in this request? {e:?}");
-                            registered_rpc.remove();
-                        }
-                    } else if let Completion::Unary(completion) = registered_rpc.remove() {
-                        if let Err(e) = completion.send(Ok(message_from_the_network)) {
-                            log::debug!("{message_id_from_the_network} completion channel closed - did the client lose interest in this request? {e:?}");
-                        }
-                    } else {
-                        panic!("{message_id_from_the_network} unexpected command response type. Sorry, I wanted to borrow for streaming and remove by value for unary without doing 2 map lookups, so I couldn't match");
-                    }
-                }
-                Entry::Vacant(_vacant_entry) => {
-                    // Possibly a cancelled response if this is a client, and probably a new rpc if it's a server
-                    log::debug!(
-                        "{message_id_from_the_network} command response for command that was not in flight"
-                    );
-                    self.unregistered_message_handler
-                        .on_message(message_from_the_network, &mut self.rpc_registry);
-                }
+            Entry::Vacant(_vacant_entry) => {
+                // Possibly a cancelled response if this is a client, and probably a new rpc if it's a server
+                log::debug!("{message_id} command response for command that was not in flight");
+                self.unregistered_message_handler
+                    .on_message(message, &mut self.rpc_registry);
             }
         }
         ReactorStatus::Continue

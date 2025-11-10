@@ -7,16 +7,19 @@
 //! or protosocket-server crates.
 
 mod connection;
-mod serde;
+pub mod pooled_encoder;
 mod types;
 
 pub use connection::Connection;
-pub use types::ConnectionBindings;
+pub use pooled_encoder::PooledEncoder;
+pub use pooled_encoder::Reusable;
+pub use pooled_encoder::Serialize;
+pub use types::Decoder;
 pub use types::DeserializeError;
-pub use types::Deserializer;
+pub use types::Encoder;
 pub use types::MessageReactor;
+pub use types::OwnedBuffer;
 pub use types::ReactorStatus;
-pub use types::Serializer;
 
 pub(crate) fn interrupted(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::Interrupted

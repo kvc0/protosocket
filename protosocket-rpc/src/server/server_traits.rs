@@ -1,9 +1,12 @@
-use std::{future::Future, net::SocketAddr};
+use std::{future::Future, marker::PhantomData, net::SocketAddr};
 
-use protosocket::{Deserializer, Serializer};
+use protosocket::{Connection, Decoder, Encoder};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::Message;
+use crate::{
+    server::{connection_server::RpcConnectionServer, rpc_submitter::RpcSubmitter},
+    Message,
+};
 
 /// SocketService receives connections and produces ConnectionServices.
 ///
@@ -12,22 +15,26 @@ use crate::Message;
 /// "connection factory" for your server. It is the "top" of your service stack.
 pub trait SocketService: 'static {
     /// The type of deserializer for incoming messages.
-    type RequestDeserializer: Deserializer<Message: Message> + 'static;
+    type RequestDecoder: Decoder<Message: Message> + 'static;
     /// The type of serializer for outgoing messages.
-    type ResponseSerializer: Serializer<Message: Message> + 'static;
+    ///
+    /// Consider pooling your allocations, like with `protosocket::PooledEncoder`.
+    /// The write out to the network uses the raw `Encoder::Serialized` type, so you
+    /// can make outbound messages low-allocation via simple pooling.
+    type ResponseEncoder: Encoder<Message: Message> + 'static;
     /// The type of connection service that will be created for each connection.
     type ConnectionService: ConnectionService<
-        Request = <Self::RequestDeserializer as Deserializer>::Message,
-        Response = <Self::ResponseSerializer as Serializer>::Message,
+        Request = <Self::RequestDecoder as Decoder>::Message,
+        Response = <Self::ResponseEncoder as Encoder>::Message,
     >;
     /// The type of stream that will be used for the connection.
     /// Something like a `tokio::net::TcpStream` or `tokio_rustls::TlsStream<tokio::net::TcpStream>`.
     type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
     /// Create a new deserializer for incoming messages.
-    fn deserializer(&self) -> Self::RequestDeserializer;
+    fn decoder(&self) -> Self::RequestDecoder;
     /// Create a new serializer for outgoing messages.
-    fn serializer(&self) -> Self::ResponseSerializer;
+    fn encoder(&self) -> Self::ResponseEncoder;
 
     /// Create a new ConnectionService for a new connection.
     fn new_connection_service(&self, address: SocketAddr) -> Self::ConnectionService;
@@ -38,6 +45,63 @@ pub trait SocketService: 'static {
         &self,
         stream: tokio::net::TcpStream,
     ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static;
+}
+
+/// A strategy for spawning connections.
+/// Some Connections may not be Send
+pub trait SpawnConnection<TSocketService: SocketService>: Clone {
+    /// Spawn a connection driver task and a connection server task.
+    fn spawn_connection(
+        &self,
+        connection: Connection<
+            TSocketService::Stream,
+            TSocketService::RequestDecoder,
+            TSocketService::ResponseEncoder,
+            RpcSubmitter<TSocketService>,
+        >,
+        server: RpcConnectionServer<<TSocketService as SocketService>::ConnectionService>,
+    );
+}
+
+/// When all of the stuff in your `Connection` is `Send`, you can use a TokioSpawnConnection.
+#[derive(Debug)]
+pub struct TokioSpawnConnection<TSocketService> {
+    _phantom: PhantomData<TSocketService>,
+}
+impl<TSocketService> Default for TokioSpawnConnection<TSocketService> {
+    fn default() -> Self {
+        Self {
+            _phantom: Default::default(),
+        }
+    }
+}
+impl<TSocketService> Clone for TokioSpawnConnection<TSocketService> {
+    fn clone(&self) -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+impl<TSocketService> SpawnConnection<TSocketService> for TokioSpawnConnection<TSocketService>
+where
+    TSocketService: SocketService,
+    TSocketService::RequestDecoder: Send,
+    TSocketService::ResponseEncoder: Send,
+    <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
+{
+    fn spawn_connection(
+        &self,
+        connection: Connection<
+            <TSocketService as SocketService>::Stream,
+            <TSocketService as SocketService>::RequestDecoder,
+            <TSocketService as SocketService>::ResponseEncoder,
+            RpcSubmitter<TSocketService>,
+        >,
+        server: RpcConnectionServer<<TSocketService as SocketService>::ConnectionService>,
+    ) {
+        tokio::spawn(connection);
+        tokio::spawn(server);
+    }
 }
 
 /// A connection service receives rpcs from clients and sends responses.

@@ -52,17 +52,17 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type RequestDeserializer = protosocket_messagepack::ProtosocketMessagePackDeserializer<Request>;
-    type ResponseSerializer = protosocket_messagepack::ProtosocketMessagePackSerializer<Response>;
+    type RequestDecoder = protosocket_messagepack::ProtosocketMessagePackDecoder<Request>;
+    type ResponseEncoder = protosocket_messagepack::MessagePackSerializer<Response>;
     type ConnectionService = DemoRpcConnectionServer;
     type Stream = tokio::net::TcpStream;
 
-    fn deserializer(&self) -> Self::RequestDeserializer {
-        Self::RequestDeserializer::default()
+    fn decoder(&self) -> Self::RequestDecoder {
+        Self::RequestDecoder::default()
     }
 
-    fn serializer(&self) -> Self::ResponseSerializer {
-        Self::ResponseSerializer::default()
+    fn encoder(&self) -> Self::ResponseEncoder {
+        Self::ResponseEncoder::default()
     }
 
     fn new_connection_service(&self, address: std::net::SocketAddr) -> Self::ConnectionService {
