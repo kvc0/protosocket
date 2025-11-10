@@ -40,8 +40,8 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let concurrent_count = Arc::new(Semaphore::new(max_concurrent));
     for _i in 0..2 {
         let (client, connection) = protosocket_rpc::client::connect::<
-            protosocket_messagepack::ProtosocketMessagePackSerializer<Request>,
-            protosocket_messagepack::ProtosocketMessagePackDeserializer<Response>,
+            protosocket_messagepack::MessagePackSerializer<Request>,
+            protosocket_messagepack::ProtosocketMessagePackDecoder<Response>,
             _,
         >(
             std::env::var("ENDPOINT")

@@ -1,0 +1,22 @@
+[package]
+name = "benchmarks"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lib]
+bench = false
+
+[[bench]]
+name = "safety_perf"
+harness = false
+
+[dev-dependencies]
+bytes                   = { workspace = true }
+criterion               = { workspace = true }

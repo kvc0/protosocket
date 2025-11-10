@@ -9,7 +9,7 @@ use crate::{
     Message,
 };
 
-use super::{reactor::completion_reactor::RpcCompletionConnectionBindings, RpcClient};
+use super::RpcClient;
 
 pub trait StreamConnector: std::fmt::Debug {
     type Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static;
@@ -228,14 +228,20 @@ pub async fn connect<Serializer, Deserializer, TStreamConnector>(
     (
         RpcClient<Serializer::Message, Deserializer::Message>,
         protosocket::Connection<
-            RpcCompletionConnectionBindings<Serializer, Deserializer, TStreamConnector::Stream>,
+            TStreamConnector::Stream,
+            Deserializer,
+            Serializer,
+            RpcCompletionReactor<
+                Deserializer::Message,
+                DoNothingMessageHandler<Deserializer::Message>,
+            >,
         >,
     ),
     crate::Error,
 >
 where
-    Deserializer: protosocket::Deserializer + Default + 'static,
-    Serializer: protosocket::Serializer + Default + 'static,
+    Deserializer: protosocket::Decoder + Default + 'static,
+    Serializer: protosocket::Encoder + Default + 'static,
     Deserializer::Message: Message,
     Serializer::Message: Message,
     TStreamConnector: StreamConnector,
@@ -269,10 +275,12 @@ where
 
     // Tie outbound_messages to message_reactor via a protosocket::Connection
     let connection = Connection::<
-        RpcCompletionConnectionBindings<Serializer, Deserializer, TStreamConnector::Stream>,
+        TStreamConnector::Stream,
+        Deserializer,
+        Serializer,
+        RpcCompletionReactor<Deserializer::Message, DoNothingMessageHandler<Deserializer::Message>>,
     >::new(
         stream,
-        address,
         Deserializer::default(),
         Serializer::default(),
         configuration.max_buffer_length,

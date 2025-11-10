@@ -5,6 +5,8 @@ use std::{
 
 use futures::{stream::FuturesUnordered, task::SpawnExt, StreamExt};
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
+use protosocket::PooledEncoder;
+use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
     client::{Configuration, RpcClient, TcpStreamConnector},
     ProtosocketControlCode,
@@ -40,8 +42,8 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let concurrent_count = Arc::new(AtomicUsize::new(0));
     for _i in 0..8 {
         let (client, connection) = protosocket_rpc::client::connect::<
-            protosocket_prost::ProstSerializer<Response, Request>,
-            protosocket_prost::ProstSerializer<Response, Request>,
+            PooledEncoder<ProstSerializer<Request>>,
+            ProstDecoder<Response>,
             _,
         >(
             std::env::var("ENDPOINT")

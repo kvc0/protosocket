@@ -1,16 +1,24 @@
-/// A serializer takes messages and produces outbound bytes.
-pub trait Serializer: Unpin + Send {
+use crate::pooled_encoder::Serialize;
+
+/// An encoder takes messages and produces outbound bytes.
+pub trait Encoder {
     /// The message type consumed by this serializer.
-    type Message: Send;
+    type Message;
+
+    /// The type this serializer produces.
+    ///
+    /// If you want to write to raw vectors, consider wrapping your serializer
+    /// with [PooledEncoder] and using that instead.
+    type Serialized: bytes::Buf;
 
     /// Encode a message into a buffer.
-    fn encode(&mut self, response: Self::Message, buffer: &mut Vec<u8>);
+    fn encode(&mut self, message: Self::Message) -> Self::Serialized;
 }
 
-/// A deserializer takes inbound bytes and produces messages.
-pub trait Deserializer: Unpin + Send {
+/// A decoder takes inbound bytes and produces messages.
+pub trait Decoder {
     /// The message type produced by this deserializer.
-    type Message: Send;
+    type Message;
 
     /// Decode a message from the buffer, or tell why you can't.
     ///
@@ -59,13 +67,10 @@ pub trait MessageReactor: Unpin + Send + 'static {
 
     /// Called from the connection's driver task when messages are received.
     ///
-    /// You must take all of the messages quickly: Blocking here will block the connection.
+    /// You must take the message quickly: Blocking here will block the connection.
     /// If you can't accept new messages and you can't queue, you should consider returning
     /// Disconnect.
-    fn on_inbound_messages(
-        &mut self,
-        messages: impl IntoIterator<Item = Self::Inbound>,
-    ) -> ReactorStatus;
+    fn on_inbound_message(&mut self, message: Self::Inbound) -> ReactorStatus;
 }
 
 /// What the connection should do after processing a batch of inbound messages.
@@ -77,19 +82,46 @@ pub enum ReactorStatus {
     Disconnect,
 }
 
-/// Define the types for a Connection.
-///
-/// A protosocket uses only 1 kind of message per port. This is a constraint to keep types
-/// straightforward. If you want multiple message types, you should consider using protocol
-/// buffers `oneof` fields. You would use a wrapper type to hold the oneof and any additional
-/// metadata, like a request ID or trace id.
-pub trait ConnectionBindings: 'static {
-    /// The deserializer for this connection.
-    type Deserializer: Deserializer;
-    /// The serializer for this connection.
-    type Serializer: Serializer;
-    /// The message reactor for this connection.
-    type Reactor: MessageReactor<Inbound = <Self::Deserializer as Deserializer>::Message>;
-    /// Bidirectional Stream type to use for this connection. Like `tokio::net::TcpStream`.
-    type Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static;
+impl<T> Encoder for T
+where
+    T: Serialize,
+{
+    type Message = T::Message;
+    type Serialized = OwnedBuffer;
+
+    fn encode(&mut self, message: Self::Message) -> Self::Serialized {
+        let mut buffer = Vec::new();
+        self.serialize_into_buffer(message, &mut buffer);
+        OwnedBuffer::new(buffer)
+    }
+}
+
+/// A basic Buf wrapper for a byte array. This works for simple apis, but if you
+/// have latency, memory, or cpu constraints, you should be using PooledEncoder
+/// or another more sophisticated memory reuse mechanism.
+pub struct OwnedBuffer {
+    buffer: Vec<u8>,
+    cursor: usize,
+}
+impl OwnedBuffer {
+    fn new(buffer: Vec<u8>) -> Self {
+        Self { buffer, cursor: 0 }
+    }
+}
+impl bytes::Buf for OwnedBuffer {
+    #[inline(always)]
+    fn remaining(&self) -> usize {
+        self.buffer.len() - self.cursor
+    }
+
+    #[inline(always)]
+    fn chunk(&self) -> &[u8] {
+        &self.buffer[self.cursor..]
+    }
+
+    #[inline(always)]
+    fn advance(&mut self, cnt: usize) {
+        assert!(self.buffer.len() <= self.cursor + cnt);
+        self.cursor += cnt;
+    }
 }

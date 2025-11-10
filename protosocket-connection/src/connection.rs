@@ -2,10 +2,12 @@ use std::{
     collections::VecDeque,
     future::Future,
     io::IoSlice,
+    mem::MaybeUninit,
     pin::{pin, Pin},
     task::{Context, Poll},
 };
 
+use bytes::Buf;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::mpsc,
@@ -13,8 +15,8 @@ use tokio::{
 
 use crate::{
     interrupted,
-    types::{ConnectionBindings, DeserializeError, MessageReactor, ReactorStatus},
-    would_block, Deserializer, Serializer,
+    types::{DeserializeError, MessageReactor, ReactorStatus},
+    would_block, Decoder, Encoder,
 };
 
 /// A bidirectional, message-oriented AsyncRead/AsyncWrite stream wrapper.
@@ -28,36 +30,62 @@ use crate::{
 /// forward them to a Stream, you can do so in the reactor. If you can
 /// process them very quickly, you can handle them inline in the reactor
 /// callback `on_messages`, which will let you reply as soon as possible.
-pub struct Connection<Bindings: ConnectionBindings> {
-    stream: Bindings::Stream,
-    address: std::net::SocketAddr,
-    outbound_messages: mpsc::Receiver<<Bindings::Serializer as Serializer>::Message>,
-    outbound_message_buffer: Vec<<Bindings::Serializer as Serializer>::Message>,
-    serializer_buffers: Vec<Vec<u8>>,
-    send_buffer: VecDeque<Vec<u8>>,
+pub struct Connection<
+    // Bidirectional Stream type to use for this connection. Like `tokio::net::TcpStream`.
+    TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+    // The deserializer for this connection.
+    TDecoder: Decoder,
+    // The serializer for this connection.
+    TEncoder: Encoder,
+    // The message reactor for this connection.
+    TReactor: MessageReactor<Inbound = TDecoder::Message>,
+> {
+    stream: TStream,
+    outbound_messages: mpsc::Receiver<<TEncoder as Encoder>::Message>,
+    outbound_message_buffer: Vec<<TEncoder as Encoder>::Message>,
+    send_buffer: VecDeque<<TEncoder as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
     max_buffer_length: usize,
+    max_queued_send_messages: usize,
     buffer_allocation_increment: usize,
-    deserializer: Bindings::Deserializer,
-    serializer: Bindings::Serializer,
-    reactor: Bindings::Reactor,
+    decoder: TDecoder,
+    encoder: TEncoder,
+    reactor: TReactor,
 }
 
-impl<Bindings: ConnectionBindings> std::fmt::Display for Connection<Bindings> {
+impl<
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+        TDecoder: Decoder,
+        TEncoder: Encoder,
+        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+    > std::fmt::Display for Connection<TStream, TDecoder, TEncoder, TReactor>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let read_end = self.receive_buffer_unread_index;
         let read_capacity = self.receive_buffer.len();
         let write_queue = self.send_buffer.len();
-        let write_length: usize = self.send_buffer.iter().map(|b| b.len()).sum();
-        let address = self.address;
-        write!(f, "Connection: {address} {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}}}}")
+        let write_length: usize = self.send_buffer.iter().map(|b| b.remaining()).sum();
+        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}}}}")
     }
 }
 
-impl<Bindings: ConnectionBindings> Unpin for Connection<Bindings> {}
+impl<
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+        TDecoder: Decoder,
+        TEncoder: Encoder,
+        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+    > Unpin for Connection<TStream, TDecoder, TEncoder, TReactor>
+{
+}
 
-impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
+impl<
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+        TDecoder: Decoder,
+        TEncoder: Encoder,
+        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+    > Future for Connection<TStream, TDecoder, TEncoder, TReactor>
+{
     type Output = ();
 
     /// Take a look at ConnectionBindings for the type definitions used by the Connection
@@ -94,7 +122,13 @@ impl<Bindings: ConnectionBindings> Future for Connection<Bindings> {
     }
 }
 
-impl<Lifecycle: ConnectionBindings> Drop for Connection<Lifecycle> {
+impl<
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+        TDecoder: Decoder,
+        TEncoder: Encoder,
+        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+    > Drop for Connection<TStream, TDecoder, TEncoder, TReactor>
+{
     fn drop(&mut self) {
         log::debug!("connection dropped")
     }
@@ -112,39 +146,40 @@ enum ReadBufferState {
     Error(std::io::Error),
 }
 
-impl<Bindings: ConnectionBindings> Connection<Bindings>
-where
-    <Bindings::Deserializer as Deserializer>::Message: Send,
+impl<
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+        TDecoder: Decoder,
+        TEncoder: Encoder,
+        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+    > Connection<TStream, TDecoder, TEncoder, TReactor>
 {
     /// Create a new protosocket Connection with the given stream and reactor.
     ///
     /// Probably you are interested in the `protosocket-server` or `protosocket-prost` crates.
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn new(
-        stream: Bindings::Stream,
-        address: std::net::SocketAddr,
-        deserializer: Bindings::Deserializer,
-        serializer: Bindings::Serializer,
+        stream: TStream,
+        decoder: TDecoder,
+        encoder: TEncoder,
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
-        outbound_messages: mpsc::Receiver<<Bindings::Serializer as Serializer>::Message>,
-        reactor: Bindings::Reactor,
-    ) -> Connection<Bindings> {
+        outbound_messages: mpsc::Receiver<TEncoder::Message>,
+        reactor: TReactor,
+    ) -> Self {
         // outbound must be queued so it can be called from any context
         Self {
             stream,
-            address,
             outbound_messages,
             outbound_message_buffer: Vec::new(),
             send_buffer: Default::default(),
-            serializer_buffers: Vec::from_iter((0..max_queued_send_messages).map(|_| Vec::new())),
             receive_buffer: Vec::new(),
             max_buffer_length,
+            max_queued_send_messages,
             receive_buffer_unread_index: 0,
             buffer_allocation_increment,
-            deserializer,
-            serializer,
+            decoder,
+            encoder,
             reactor,
         }
     }
@@ -185,10 +220,10 @@ where
 
             let buffer = &self.receive_buffer[buffer_cursor..self.receive_buffer_unread_index];
             log::trace!("decode {buffer:?}");
-            match self.deserializer.decode(buffer) {
+            match self.decoder.decode(buffer) {
                 Ok((length, message)) => {
                     buffer_cursor += length;
-                    if self.reactor.on_inbound_messages([message]) == ReactorStatus::Disconnect {
+                    if self.reactor.on_inbound_message(message) == ReactorStatus::Disconnect {
                         log::debug!("reactor requested disconnect");
                         return ReadBufferState::Disconnected;
                     }
@@ -215,7 +250,7 @@ where
                         buffer_cursor += distance;
                     }
                 },
-            }
+            };
         };
         if buffer_cursor != 0 && buffer_cursor == self.receive_buffer_unread_index {
             log::trace!("read buffer complete - resetting: {self}");
@@ -267,7 +302,7 @@ where
 
     /// This serializes work-in-progress messages and moves them over into the write queue
     fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
-        let max_outbound = self.serializer_buffers.len();
+        let max_outbound = self.max_queued_send_messages - self.outbound_messages.len();
         if max_outbound == 0 {
             log::debug!("send is full: {self}");
             // pending on a network status event
@@ -282,7 +317,7 @@ where
                     match self.outbound_messages.poll_recv_many(
                         context,
                         &mut self.outbound_message_buffer,
-                        self.serializer_buffers.capacity(),
+                        self.max_queued_send_messages,
                     ) {
                         Poll::Ready(count) => {
                             // ugh, I know. but poll_recv_many is much cheaper than poll_recv,
@@ -306,22 +341,10 @@ where
                     }
                 }
             };
-            let mut buffer = self
-                .serializer_buffers
-                .pop()
-                .expect("max_outbound is limited by serializer_buffers length");
-            self.serializer.encode(message, &mut buffer);
-            if self.max_buffer_length < buffer.len() {
-                log::error!(
-                    "tried to send too large a message. Max {}, attempted: {}",
-                    self.max_buffer_length,
-                    buffer.len()
-                );
-                return Poll::Ready(());
-            }
+            let buffer = self.encoder.encode(message);
             log::trace!(
                 "serialized message and enqueueing outbound buffer: {}b",
-                buffer.len()
+                buffer.remaining()
             );
             // queue up a writev
             self.send_buffer.push_back(buffer);
@@ -343,10 +366,6 @@ where
         &mut self,
         context: &mut Context<'_>,
     ) -> std::result::Result<bool, std::io::Error> {
-        /// I need to figure out how to get this from the os rather than hardcoding. 16 is the lowest I've seen mention of,
-        /// and I've seen 1024 more commonly.
-        const UIO_MAXIOV: usize = 128;
-
         loop {
             if self.poll_serialize_outbound_messages(context).is_ready() {
                 log::debug!("outbound channel closed");
@@ -356,13 +375,37 @@ where
                 log::trace!("send buffer is empty");
                 Ok(false)
             } else {
-                let buffers: Vec<IoSlice> = self
-                    .send_buffer
-                    .iter()
-                    .take(UIO_MAXIOV)
-                    .map(|v| IoSlice::new(v))
-                    .collect();
-                match pin!(&mut self.stream).poll_write_vectored(context, &buffers) {
+                // I need to figure out how to get this from the os rather than hardcoding.
+                // 16 is the lowest I've seen mention of, and I've seen 1024 more commonly.
+                const UIO_MAXIOV: usize = 128;
+
+                // Make a stack array of IoSlices, but make sure the drop rules are still
+                // compatible with cheating allocation.
+                // SAFETY: This assert should ensure drop of unitialized data is the same
+                //         as an element-wise drop.
+                const {
+                    assert!(!std::mem::needs_drop::<IoSlice>());
+                }
+                let mut buffers = unsafe {
+                    std::mem::transmute::<[MaybeUninit<IoSlice>; UIO_MAXIOV], [IoSlice; UIO_MAXIOV]>(
+                        [MaybeUninit::<IoSlice>::uninit(); UIO_MAXIOV],
+                    )
+                };
+
+                // Fill the io array with io vectors
+                let mut iov = 0;
+                let mut buffer_slice = buffers.as_mut_slice();
+                for buffer in &self.send_buffer {
+                    let distance = buffer.chunks_vectored(buffer_slice);
+                    iov += distance;
+                    if iov == UIO_MAXIOV {
+                        break;
+                    }
+                    buffer_slice = &mut buffer_slice[distance..];
+                }
+                let initialized_slice = &buffers[..iov];
+
+                match pin!(&mut self.stream).poll_write_vectored(context, initialized_slice) {
                     Poll::Pending => {
                         log::debug!("writev not ready - waiting for wake");
                         Ok(false)
@@ -372,7 +415,7 @@ where
                         Ok(true)
                     }
                     Poll::Ready(Ok(written)) => {
-                        self.rotate_send_buffers(written);
+                        self.advance_send_buffers(written);
                         // we need to go around again to make sure we're either done writing or pending
                         continue;
                     }
@@ -401,28 +444,21 @@ where
         }
     }
 
-    /// Discard all written bytes, and recycle the buffers that are fully written
-    fn rotate_send_buffers(&mut self, mut written: usize) {
-        let total_written = written;
+    /// Discard all written buffers
+    fn advance_send_buffers(&mut self, total_written: usize) {
+        let mut written = total_written;
         while 0 < written {
             if let Some(mut front) = self.send_buffer.pop_front() {
-                if front.len() <= written {
-                    written -= front.len();
-                    log::trace!(
-                        "recycling buffer of length {}, remaining: {}",
-                        front.len(),
-                        written
-                    );
-
-                    // Reuse the buffer!
-                    front.clear();
-                    self.serializer_buffers.push(front);
+                let remaining = front.remaining();
+                if remaining <= written {
+                    written -= remaining;
+                    log::trace!("dropping consumed buffer after sending final {remaining}b");
                 } else {
-                    // Walk the buffer forward through a replacement. It will still amortize the allocation,
-                    // but this is not optimal. It's relatively easier to manage though, and I'm a busy person.
-                    log::debug!("after writing {total_written}b, shifting partially written buffer of {}b by {written}b", front.len());
-                    let replacement = front[written..].to_vec();
-                    self.send_buffer.push_front(replacement);
+                    // Walk the buffer forward. It needs to be the next bytes on the wire, so we'll put it back in front.
+                    // Partial buffer consumption is relatively uncommon, but it definitely happens.
+                    log::debug!("after writing {total_written}b, advancing partially written buffer of {remaining}b by {written}b");
+                    front.advance(written);
+                    self.send_buffer.push_front(front);
                     break;
                 }
             } else {

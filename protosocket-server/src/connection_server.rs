@@ -1,6 +1,7 @@
 use protosocket::Connection;
-use protosocket::ConnectionBindings;
-use protosocket::Serializer;
+use protosocket::Decoder;
+use protosocket::Encoder;
+use protosocket::MessageReactor;
 use socket2::TcpKeepalive;
 use std::ffi::c_int;
 use std::future::Future;
@@ -9,26 +10,41 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 
+/// The ServerConnector listens to a socket and spawns a Reactor for each new connection.
 pub trait ServerConnector: Unpin {
-    type Bindings: ConnectionBindings;
+    /// Outbound message type
+    type Encoder: Encoder;
+    /// Inbound message type
+    type Decoder: Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>;
+    /// Per-connection message handler
+    type Reactor: MessageReactor;
+    /// Type of connected stream (possibly tls)
+    type Stream: AsyncRead + AsyncWrite + Unpin + 'static;
 
-    fn serializer(&self) -> <Self::Bindings as ConnectionBindings>::Serializer;
-    fn deserializer(&self) -> <Self::Bindings as ConnectionBindings>::Deserializer;
+    /// Create a new encoder
+    fn encoder(&self) -> Self::Encoder;
+    /// Create a new decoder
+    fn decoder(&self) -> Self::Decoder;
 
+    /// Create a per-connection message handler
     fn new_reactor(
         &self,
-        optional_outbound: mpsc::Sender<
-            <<Self::Bindings as ConnectionBindings>::Serializer as Serializer>::Message,
-        >,
+        optional_outbound: mpsc::Sender<<Self::Encoder as Encoder>::Message>,
         address: SocketAddr,
-    ) -> <Self::Bindings as ConnectionBindings>::Reactor;
+    ) -> Self::Reactor;
 
-    fn connect(
+    /// Wrap a tcp stream, or just return it
+    fn connect(&self, stream: tokio::net::TcpStream) -> Self::Stream;
+
+    /// Spawn a connection - probably you just want tokio::spawn, but you might have other needs.
+    fn spawn_connection(
         &self,
-        stream: tokio::net::TcpStream,
-    ) -> <Self::Bindings as ConnectionBindings>::Stream;
+        connection: Connection<Self::Stream, Self::Decoder, Self::Encoder, Self::Reactor>,
+    );
 }
 
 /// A `protosocket::Connection` is an IO driver. It directly uses tokio's io wrapper of mio to poll
@@ -55,7 +71,6 @@ pub struct ProtosocketServer<Connector: ServerConnector> {
     max_buffer_length: usize,
     buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
-    runtime: tokio::runtime::Handle,
 }
 
 /// Socket configuration options for a ProtosocketServer.
@@ -135,9 +150,8 @@ impl ProtosocketServerConfig {
         self,
         address: SocketAddr,
         connector: Connector,
-        runtime: tokio::runtime::Handle,
     ) -> crate::Result<ProtosocketServer<Connector>> {
-        ProtosocketServer::new(address, runtime, connector, self).await
+        ProtosocketServer::new(address, connector, self).await
     }
 }
 
@@ -158,7 +172,6 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
     /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
     async fn new(
         address: SocketAddr,
-        runtime: tokio::runtime::Handle,
         connector: Connector,
         config: ProtosocketServerConfig,
     ) -> crate::Result<Self> {
@@ -192,7 +205,6 @@ impl<Connector: ServerConnector> ProtosocketServer<Connector> {
             max_buffer_length: config.max_buffer_length,
             max_queued_outbound_messages: config.max_queued_outbound_messages,
             buffer_allocation_increment: config.buffer_allocation_increment,
-            runtime,
         })
     }
 }
@@ -212,18 +224,17 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                             .connector
                             .new_reactor(outbound_submission_queue.clone(), address);
                         let stream = self.connector.connect(stream);
-                        let connection: Connection<Connector::Bindings> = Connection::new(
+                        let connection = Connection::new(
                             stream,
-                            address,
-                            self.connector.deserializer(),
-                            self.connector.serializer(),
+                            self.connector.decoder(),
+                            self.connector.encoder(),
                             self.max_buffer_length,
                             self.buffer_allocation_increment,
                             self.max_queued_outbound_messages,
                             outbound_messages,
                             reactor,
                         );
-                        self.runtime.spawn(connection);
+                        self.connector.spawn_connection(connection);
                         continue;
                     }
                     Err(e) => {

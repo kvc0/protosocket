@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use protosocket::{ConnectionBindings, MessageReactor};
+use protosocket::{MessageReactor};
 
 use crate::prost_serializer::ProstSerializer;
 
@@ -18,8 +18,8 @@ where
     Reactor: MessageReactor<Inbound = Request>,
     TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    type Deserializer = ProstSerializer<Request, Response>;
-    type Serializer = ProstSerializer<Request, Response>;
+    type Decoder = ProstSerializer<Request, Response>;
+    type Encoder = ProstSerializer<Request, Response>;
     type Reactor = Reactor;
     type Stream = TStream;
 }
@@ -38,8 +38,8 @@ where
     Reactor: MessageReactor<Inbound = Response>,
     TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    type Deserializer = ProstSerializer<Response, Request>;
-    type Serializer = ProstSerializer<Response, Request>;
+    type Decoder = ProstSerializer<Response, Request>;
+    type Encoder = ProstSerializer<Response, Request>;
     type Reactor = Reactor;
     type Stream = TStream;
 }

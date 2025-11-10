@@ -2,7 +2,8 @@ use std::{future::Future, sync::atomic::AtomicUsize};
 
 use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
-use protosocket_prost::ProstSerializer;
+use protosocket::PooledEncoder;
+use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
     server::{ConnectionService, RpcKind, SocketService},
     ProtosocketControlCode,
@@ -53,17 +54,19 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type RequestDeserializer = ProstSerializer<Request, Response>;
-    type ResponseSerializer = ProstSerializer<Request, Response>;
+    type RequestDecoder = ProstDecoder<Request>;
+    // Use a pooled encoder to amortize memory allocation cost.
+    // Each connection gets its own little memory pool.
+    type ResponseEncoder = PooledEncoder<ProstSerializer<Response>>;
     type ConnectionService = DemoRpcConnectionServer;
     type Stream = tokio::net::TcpStream;
 
-    fn deserializer(&self) -> Self::RequestDeserializer {
-        Self::RequestDeserializer::default()
+    fn decoder(&self) -> Self::RequestDecoder {
+        Self::RequestDecoder::default()
     }
 
-    fn serializer(&self) -> Self::ResponseSerializer {
-        Self::ResponseSerializer::default()
+    fn encoder(&self) -> Self::ResponseEncoder {
+        Self::ResponseEncoder::default()
     }
 
     fn new_connection_service(&self, address: std::net::SocketAddr) -> Self::ConnectionService {

@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 bytes                   = { workspace = true }
+crossbeam               = { workspace = true }
 futures                 = { workspace = true }
 log                     = { workspace = true }
 serde                   = { workspace = true, optional = true }
