@@ -1,10 +1,13 @@
-use std::{future::Future, marker::PhantomData, net::SocketAddr};
+use std::{future::Future, marker::PhantomData};
 
 use protosocket::{Connection, Decoder, Encoder};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    server::{connection_server::RpcConnectionServer, rpc_submitter::RpcSubmitter},
+    server::{
+        connection_server::RpcConnectionServer, rpc_submitter::RpcSubmitter,
+        socket_listener::SocketListener,
+    },
     Message,
 };
 
@@ -31,20 +34,23 @@ pub trait SocketService: 'static {
     /// Something like a `tokio::net::TcpStream` or `tokio_rustls::TlsStream<tokio::net::TcpStream>`.
     type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
+    /// The listener type for this service. E.g., `TcpSocketListener`
+    type SocketListener: SocketListener;
+
     /// Create a new deserializer for incoming messages.
     fn decoder(&self) -> Self::RequestDecoder;
     /// Create a new serializer for outgoing messages.
     fn encoder(&self) -> Self::ResponseEncoder;
 
-    /// Create a new ConnectionService for a new connection.
-    fn new_connection_service(&self, address: SocketAddr) -> Self::ConnectionService;
-
     /// Accept and possibly customize the stream for a new connection.
     /// This is where you can wrap the stream with TLS.
+    ///
+    /// Create a new ConnectionService for your new connection.
+    /// The Stream you provide will be wired into a `protosocket::Connection`.
     fn accept_stream(
         &self,
-        stream: tokio::net::TcpStream,
-    ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static;
+        stream: <Self::SocketListener as SocketListener>::RawSocketConnection,
+    ) -> impl Future<Output = std::io::Result<(Self::Stream, Self::ConnectionService)>> + Send + 'static;
 }
 
 /// A strategy for spawning connections.
