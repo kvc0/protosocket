@@ -1,19 +1,17 @@
 use protosocket::Connection;
 use protosocket::Encoder;
-use socket2::TcpKeepalive;
-use std::ffi::c_int;
 use std::future::Future;
 use std::io::Error;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 use crate::server::server_traits::SpawnConnection;
 use crate::server::server_traits::TokioSpawnConnection;
+use crate::server::socket_listener::SocketListener;
+use crate::server::socket_listener::SocketResult;
 
 use super::connection_server::RpcConnectionServer;
 use super::rpc_submitter::RpcSubmitter;
@@ -34,8 +32,9 @@ where
 {
     socket_server: TSocketService,
     spawner: TSpawnConnection,
-    in_progress_connections: JoinSet<(SocketAddr, std::io::Result<TSocketService::Stream>)>,
-    listener: tokio::net::TcpListener,
+    in_progress_connections:
+        JoinSet<std::io::Result<(TSocketService::Stream, TSocketService::ConnectionService)>>,
+    listener: TSocketService::SocketListener,
     max_buffer_length: usize,
     buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
@@ -48,24 +47,20 @@ where
     TSocketService::ResponseEncoder: Send,
     <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
 {
-    /// Construct a new `SocketRpcServer` listening on the provided address.
+    /// Construct a new `SocketRpcServer` with a listener.
     pub async fn new(
-        address: std::net::SocketAddr,
+        listener: TSocketService::SocketListener,
         socket_server: TSocketService,
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_outbound_messages: usize,
-        listen_backlog: u32,
-        tcp_keepalive_duration: Option<Duration>,
     ) -> crate::Result<Self> {
         Self::new_with_spawner(
-            address,
+            listener,
             socket_server,
             max_buffer_length,
             buffer_allocation_increment,
             max_queued_outbound_messages,
-            listen_backlog,
-            tcp_keepalive_duration,
             TokioSpawnConnection::default(),
         )
         .await
@@ -77,42 +72,16 @@ where
     TSocketService: SocketService,
     TSpawnConnection: SpawnConnection<TSocketService>,
 {
-    /// Construct a new `SocketRpcServer` listening on the provided address.
+    /// Construct a new `SocketRpcServer` with a listener and a spawner.
     #[allow(clippy::too_many_arguments)]
     pub async fn new_with_spawner(
-        address: std::net::SocketAddr,
+        listener: TSocketService::SocketListener,
         socket_server: TSocketService,
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_outbound_messages: usize,
-        listen_backlog: u32,
-        tcp_keepalive_duration: Option<Duration>,
         spawner: TSpawnConnection,
     ) -> crate::Result<Self> {
-        let socket = socket2::Socket::new(
-            match address {
-                std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
-                std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
-            },
-            socket2::Type::STREAM,
-            None,
-        )?;
-
-        let mut tcp_keepalive = TcpKeepalive::new();
-        if let Some(duration) = tcp_keepalive_duration {
-            tcp_keepalive = tcp_keepalive.with_time(duration);
-        }
-
-        socket.set_nonblocking(true)?;
-        socket.set_tcp_nodelay(true)?;
-        socket.set_tcp_keepalive(&tcp_keepalive)?;
-        socket.set_reuse_port(true)?;
-        socket.set_reuse_address(true)?;
-
-        socket.bind(&address.into())?;
-        socket.listen(listen_backlog as c_int)?;
-
-        let listener = tokio::net::TcpListener::from_std(socket.into())?;
         Ok(Self {
             socket_server,
             spawner,
@@ -150,16 +119,13 @@ where
         loop {
             break match self.listener.poll_accept(context) {
                 Poll::Ready(result) => match result {
-                    Ok((stream, address)) => {
-                        stream.set_nodelay(true)?;
-                        let accept_future = self.socket_server.accept_stream(stream);
-                        self.in_progress_connections
-                            .spawn(async move { (address, accept_future.await) });
+                    SocketResult::Socket(new_connection) => {
+                        let accept_future = self.socket_server.accept_stream(new_connection);
+                        self.in_progress_connections.spawn(accept_future);
                         continue;
                     }
-                    Err(e) => {
-                        log::error!("failed to accept connection: {e:?}");
-                        continue;
+                    SocketResult::Disconnect => {
+                        break;
                     }
                 },
                 Poll::Pending => {
@@ -167,18 +133,15 @@ where
                 }
             };
         }
-        // listener is pending
         loop {
             break match self.in_progress_connections.poll_join_next(context) {
-                Poll::Ready(Some(Ok((address, connection_result)))) => {
+                Poll::Ready(Some(Ok(connection_result))) => {
                     match connection_result {
-                        Ok(stream) => {
+                        Ok((stream, connection_service)) => {
                             let spawner = self.spawner.clone();
                             let (submitter, inbound_messages) = RpcSubmitter::new();
                             let (outbound_messages, outbound_messages_receiver) =
                                 mpsc::channel(self.max_queued_outbound_messages);
-                            let connection_service =
-                                self.socket_server.new_connection_service(address);
                             let connection_rpc_server = RpcConnectionServer::new(
                                 connection_service,
                                 inbound_messages,

@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    net::SocketAddr,
     sync::{atomic::AtomicUsize, Arc},
 };
 
@@ -8,10 +9,11 @@ use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, Respons
 use protosocket::PooledEncoder;
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    server::{ConnectionService, RpcKind, SocketService},
+    server::{ConnectionService, RpcKind, SocketService, TcpSocketListener},
     ProtosocketControlCode,
 };
 use rustls_pemfile::Item;
+use tokio::net::TcpStream;
 
 mod messages;
 
@@ -64,17 +66,19 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         .with_single_cert(certs, keys.pop().expect("must have a key"))?;
 
     let mut server = protosocket_rpc::server::SocketRpcServer::new(
-        std::env::var("HOST")
-            .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
-            .parse()?,
+        TcpSocketListener::listen(
+            std::env::var("HOST")
+                .unwrap_or_else(|_| "0.0.0.0:9000".to_string())
+                .parse()?,
+            1024,
+            None,
+        )?,
         DemoRpcSocketService {
             tls_acceptor: Arc::new(server_config).into(),
         },
         4 << 20,
         1 << 20,
         128,
-        64 << 10,
-        None,
     )
     .await?;
     server.set_max_queued_outbound_messages(512);
@@ -95,6 +99,7 @@ impl SocketService for DemoRpcSocketService {
     // Each connection gets its own little memory pool.
     type ResponseEncoder = PooledEncoder<ProstSerializer<Response>>;
     type ConnectionService = DemoRpcConnectionServer;
+    type SocketListener = TcpSocketListener;
     type Stream = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
 
     fn decoder(&self) -> Self::RequestDecoder {
@@ -105,17 +110,18 @@ impl SocketService for DemoRpcSocketService {
         Self::ResponseEncoder::default()
     }
 
-    fn new_connection_service(&self, address: std::net::SocketAddr) -> Self::ConnectionService {
-        log::info!("new connection server {address}");
-        DemoRpcConnectionServer { address }
-    }
-
     fn accept_stream(
         &self,
-        stream: tokio::net::TcpStream,
-    ) -> impl Future<Output = std::io::Result<Self::Stream>> + Send + 'static {
+        (stream, address): (TcpStream, SocketAddr),
+    ) -> impl Future<Output = std::io::Result<(Self::Stream, Self::ConnectionService)>> + Send + 'static
+    {
         let acceptor = self.tls_acceptor.clone();
-        async move { acceptor.accept(stream).await }
+        async move {
+            log::info!("new connection - TCP: {address}");
+            let connection = acceptor.accept(stream).await;
+            log::info!("new connection - TLS handshake: {address}");
+            connection.map(|stream| (stream, DemoRpcConnectionServer { address }))
+        }
     }
 }
 
