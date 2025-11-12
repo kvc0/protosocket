@@ -1032,8 +1032,10 @@ dependencies = [
  "futures",
  "log",
  "serde",
+ "socket2 0.6.0",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
 ]
 

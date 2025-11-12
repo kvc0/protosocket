@@ -1,9 +1,10 @@
-use std::{future::Future, net::SocketAddr, sync::atomic::AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
 use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
+use protosocket::{StreamWithAddress, TcpSocketListener};
 use protosocket_rpc::{
-    server::{ConnectionService, RpcKind, SocketService, TcpSocketListener},
+    server::{ConnectionService, RpcKind, SocketService},
     ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
@@ -58,7 +59,6 @@ impl SocketService for DemoRpcSocketService {
     type RequestDecoder = protosocket_messagepack::ProtosocketMessagePackDecoder<Request>;
     type ResponseEncoder = protosocket_messagepack::MessagePackSerializer<Response>;
     type ConnectionService = DemoRpcConnectionServer;
-    type Stream = TcpStream;
     type SocketListener = TcpSocketListener;
 
     fn decoder(&self) -> Self::RequestDecoder {
@@ -69,13 +69,11 @@ impl SocketService for DemoRpcSocketService {
         Self::ResponseEncoder::default()
     }
 
-    fn accept_stream(
-        &self,
-        (stream, address): (TcpStream, SocketAddr),
-    ) -> impl Future<Output = std::io::Result<(Self::Stream, Self::ConnectionService)>> + Send + 'static
-    {
-        log::info!("new connection server {address}");
-        futures::future::ok((stream, DemoRpcConnectionServer { address }))
+    fn new_stream_service(&self, stream: &StreamWithAddress<TcpStream>) -> Self::ConnectionService {
+        log::info!("new connection server {}", stream.address());
+        DemoRpcConnectionServer {
+            address: stream.address(),
+        }
     }
 }
 

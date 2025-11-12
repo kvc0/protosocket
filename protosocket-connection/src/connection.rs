@@ -15,8 +15,8 @@ use tokio::{
 
 use crate::{
     interrupted,
-    types::{DeserializeError, MessageReactor, ReactorStatus},
-    would_block, Decoder, Encoder,
+    message_reactor::{MessageReactor, ReactorStatus},
+    would_block, Decoder, DeserializeError, Encoder,
 };
 
 /// A bidirectional, message-oriented AsyncRead/AsyncWrite stream wrapper.

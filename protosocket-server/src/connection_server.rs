@@ -2,48 +2,50 @@ use protosocket::Connection;
 use protosocket::Decoder;
 use protosocket::Encoder;
 use protosocket::MessageReactor;
-use socket2::TcpKeepalive;
-use std::ffi::c_int;
+use protosocket::SocketListener;
+use protosocket::SocketResult;
+use protosocket::TcpSocketListener;
 use std::future::Future;
 use std::io::Error;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 
 /// The ServerConnector listens to a socket and spawns a Reactor for each new connection.
 pub trait ServerConnector: Unpin {
-    /// Outbound message type
-    type Encoder: Encoder;
     /// Inbound message type
-    type Decoder: Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>;
+    type RequestDecoder: Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>;
+    /// Outbound message type
+    type ResponseEncoder: Encoder;
     /// Per-connection message handler
     type Reactor: MessageReactor;
-    /// Type of connected stream (possibly tls)
-    type Stream: AsyncRead + AsyncWrite + Unpin + 'static;
+    /// The listener type for this service. E.g., `TcpSocketListener`
+    type SocketListener: SocketListener;
 
     /// Create a new encoder
-    fn encoder(&self) -> Self::Encoder;
+    fn encoder(&self) -> Self::ResponseEncoder;
     /// Create a new decoder
-    fn decoder(&self) -> Self::Decoder;
+    fn decoder(&self) -> Self::RequestDecoder;
 
-    /// Create a per-connection message handler
+    /// Create a per-connection message Reactor.
+    /// You can look at the connection in here if you need some data, like a SocketAddr
     fn new_reactor(
         &self,
-        optional_outbound: mpsc::Sender<<Self::Encoder as Encoder>::Message>,
-        address: SocketAddr,
+        optional_outbound: mpsc::Sender<<Self::ResponseEncoder as Encoder>::Message>,
+        _connection: &<Self::SocketListener as SocketListener>::Stream,
     ) -> Self::Reactor;
-
-    /// Wrap a tcp stream, or just return it
-    fn connect(&self, stream: tokio::net::TcpStream) -> Self::Stream;
 
     /// Spawn a connection - probably you just want tokio::spawn, but you might have other needs.
     fn spawn_connection(
         &self,
-        connection: Connection<Self::Stream, Self::Decoder, Self::Encoder, Self::Reactor>,
+        connection: Connection<
+            <Self::SocketListener as SocketListener>::Stream,
+            Self::RequestDecoder,
+            Self::ResponseEncoder,
+            Self::Reactor,
+        >,
     );
 }
 
@@ -67,7 +69,7 @@ pub trait ServerConnector: Unpin {
 /// Construct a new ProtosocketServer by creating a ProtosocketServerConfig and calling the {{bind_tcp}} method.
 pub struct ProtosocketServer<Connector: ServerConnector> {
     connector: Connector,
-    listener: tokio::net::TcpListener,
+    listener: Connector::SocketListener,
     max_buffer_length: usize,
     buffer_allocation_increment: usize,
     max_queued_outbound_messages: usize,
@@ -146,12 +148,20 @@ impl ProtosocketServerConfig {
 
     /// Binds a tcp listener to the given address and returns a ProtosocketServer with this configuration.
     /// After binding, you must await the returned server future to process requests.
-    pub async fn bind_tcp<Connector: ServerConnector>(
+    pub fn bind_tcp<Connector: ServerConnector<SocketListener = TcpSocketListener>>(
         self,
         address: SocketAddr,
         connector: Connector,
     ) -> crate::Result<ProtosocketServer<Connector>> {
-        ProtosocketServer::new(address, connector, self).await
+        Ok(ProtosocketServer::new(
+            TcpSocketListener::listen(
+                address,
+                self.socket_config.listen_backlog,
+                self.socket_config.keepalive_duration,
+            )?,
+            connector,
+            self,
+        ))
     }
 }
 
@@ -167,63 +177,39 @@ impl Default for ProtosocketServerConfig {
 }
 
 impl<Connector: ServerConnector> ProtosocketServer<Connector> {
-    /// Construct a new `ProtosocketServer` listening on the provided address.
-    /// The address will be bound and listened upon with `SO_REUSEADDR` set.
-    /// The server will use the provided runtime to spawn new tcp connections as `protosocket::Connection`s.
-    async fn new(
-        address: SocketAddr,
+    /// Construct a new `ProtosocketServer`.
+    fn new(
+        listener: Connector::SocketListener,
         connector: Connector,
         config: ProtosocketServerConfig,
-    ) -> crate::Result<Self> {
-        let socket = socket2::Socket::new(
-            match address {
-                SocketAddr::V4(_) => socket2::Domain::IPV4,
-                SocketAddr::V6(_) => socket2::Domain::IPV6,
-            },
-            socket2::Type::STREAM,
-            None,
-        )?;
-
-        let mut tcp_keepalive = TcpKeepalive::new();
-        if let Some(duration) = config.socket_config.keepalive_duration {
-            tcp_keepalive = tcp_keepalive.with_time(duration);
-        }
-
-        socket.set_nonblocking(true)?;
-        socket.set_tcp_nodelay(config.socket_config.nodelay)?;
-        socket.set_tcp_keepalive(&tcp_keepalive)?;
-        socket.set_reuse_port(config.socket_config.reuse)?;
-        socket.set_reuse_address(config.socket_config.reuse)?;
-
-        socket.bind(&address.into())?;
-        socket.listen(config.socket_config.listen_backlog as c_int)?;
-
-        let listener = tokio::net::TcpListener::from_std(socket.into())?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             connector,
             listener,
             max_buffer_length: config.max_buffer_length,
             max_queued_outbound_messages: config.max_queued_outbound_messages,
             buffer_allocation_increment: config.buffer_allocation_increment,
-        })
+        }
     }
 }
 
+impl<Connector: ServerConnector> Unpin for ProtosocketServer<Connector> {}
 impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
     type Output = Result<(), Error>;
 
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             break match self.listener.poll_accept(context) {
                 Poll::Ready(result) => match result {
-                    Ok((stream, address)) => {
-                        stream.set_nodelay(true)?;
+                    SocketResult::Stream(stream) => {
                         let (outbound_submission_queue, outbound_messages) =
                             mpsc::channel(self.max_queued_outbound_messages);
+                        // I want to let people make their stream,reactor tuple in an async context.
+                        // I want it to not require Send, so that io_uring is possible
+                        // That unfortunately means that Stream might have to be internally async
                         let reactor = self
                             .connector
-                            .new_reactor(outbound_submission_queue.clone(), address);
-                        let stream = self.connector.connect(stream);
+                            .new_reactor(outbound_submission_queue.clone(), &stream);
                         let connection = Connection::new(
                             stream,
                             self.connector.decoder(),
@@ -237,10 +223,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                         self.connector.spawn_connection(connection);
                         continue;
                     }
-                    Err(e) => {
-                        log::error!("failed to accept connection: {e:?}");
-                        continue;
-                    }
+                    SocketResult::Disconnect => Poll::Ready(Ok(())),
                 },
                 Poll::Pending => Poll::Pending,
             };

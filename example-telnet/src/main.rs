@@ -5,8 +5,12 @@ use std::{
     time::Duration,
 };
 
-use protosocket::{Decoder, DeserializeError, Encoder, MessageReactor, ReactorStatus};
+use protosocket::{
+    Decoder, DeserializeError, Encoder, MessageReactor, ReactorStatus, SocketListener,
+    StreamWithAddress, TcpSocketListener,
+};
 use protosocket_server::{ProtosocketServerConfig, ServerConnector};
+use tokio::net::TcpStream;
 
 #[allow(clippy::expect_used)]
 #[tokio::main]
@@ -15,9 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let server_context = ServerContext::default();
     let config = ProtosocketServerConfig::default();
-    let server = config
-        .bind_tcp("127.0.0.1:9000".parse()?, server_context)
-        .await?;
+    let server = config.bind_tcp("127.0.0.1:9000".parse()?, server_context)?;
 
     tokio::spawn(server).await??;
     Ok(())
@@ -29,39 +31,35 @@ struct ServerContext {
 }
 
 impl ServerConnector for ServerContext {
-    type Encoder = StringSerializer;
-    type Decoder = StringSerializer;
+    type SocketListener = TcpSocketListener;
+    type RequestDecoder = StringSerializer;
+    type ResponseEncoder = StringSerializer;
     type Reactor = StringReactor;
-    type Stream = tokio::net::TcpStream;
 
-    fn encoder(&self) -> Self::Encoder {
+    fn encoder(&self) -> Self::ResponseEncoder {
         StringSerializer
     }
 
-    fn decoder(&self) -> Self::Decoder {
+    fn decoder(&self) -> Self::RequestDecoder {
         StringSerializer
     }
 
     fn new_reactor(
         &self,
-        optional_outbound: tokio::sync::mpsc::Sender<<Self::Encoder as Encoder>::Message>,
-        _address: std::net::SocketAddr,
+        optional_outbound: tokio::sync::mpsc::Sender<<Self::ResponseEncoder as Encoder>::Message>,
+        _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {
         StringReactor {
             outbound: optional_outbound,
         }
     }
 
-    fn connect(&self, stream: tokio::net::TcpStream) -> Self::Stream {
-        stream
-    }
-
     fn spawn_connection(
         &self,
         connection: protosocket::Connection<
-            Self::Stream,
-            Self::Decoder,
-            Self::Encoder,
+            <Self::SocketListener as SocketListener>::Stream,
+            Self::RequestDecoder,
+            Self::ResponseEncoder,
             Self::Reactor,
         >,
     ) {
