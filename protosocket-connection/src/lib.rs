@@ -7,19 +7,27 @@
 //! or protosocket-server crates.
 
 mod connection;
+mod encoding;
+mod error;
+mod message_reactor;
 pub mod pooled_encoder;
-mod types;
+mod socket_listener;
 
 pub use connection::Connection;
+pub use encoding::Decoder;
+pub use encoding::Encoder;
+pub use encoding::OwnedBuffer;
+pub use error::DeserializeError;
+pub use message_reactor::MessageReactor;
+pub use message_reactor::ReactorStatus;
 pub use pooled_encoder::PooledEncoder;
 pub use pooled_encoder::Reusable;
 pub use pooled_encoder::Serialize;
-pub use types::Decoder;
-pub use types::DeserializeError;
-pub use types::Encoder;
-pub use types::MessageReactor;
-pub use types::OwnedBuffer;
-pub use types::ReactorStatus;
+pub use socket_listener::SocketListener;
+pub use socket_listener::SocketResult;
+pub use socket_listener::StreamWithAddress;
+pub use socket_listener::TcpSocketListener;
+pub use socket_listener::TlsSocketListener;
 
 pub(crate) fn interrupted(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::Interrupted

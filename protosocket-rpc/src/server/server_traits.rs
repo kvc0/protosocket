@@ -1,13 +1,9 @@
 use std::{future::Future, marker::PhantomData};
 
-use protosocket::{Connection, Decoder, Encoder};
-use tokio::io::{AsyncRead, AsyncWrite};
+use protosocket::{Connection, Decoder, Encoder, SocketListener};
 
 use crate::{
-    server::{
-        connection_server::RpcConnectionServer, rpc_submitter::RpcSubmitter,
-        socket_listener::SocketListener,
-    },
+    server::{connection_server::RpcConnectionServer, rpc_submitter::RpcSubmitter},
     Message,
 };
 
@@ -30,9 +26,6 @@ pub trait SocketService: 'static {
         Request = <Self::RequestDecoder as Decoder>::Message,
         Response = <Self::ResponseEncoder as Encoder>::Message,
     >;
-    /// The type of stream that will be used for the connection.
-    /// Something like a `tokio::net::TcpStream` or `tokio_rustls::TlsStream<tokio::net::TcpStream>`.
-    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
 
     /// The listener type for this service. E.g., `TcpSocketListener`
     type SocketListener: SocketListener;
@@ -42,15 +35,13 @@ pub trait SocketService: 'static {
     /// Create a new serializer for outgoing messages.
     fn encoder(&self) -> Self::ResponseEncoder;
 
-    /// Accept and possibly customize the stream for a new connection.
-    /// This is where you can wrap the stream with TLS.
-    ///
     /// Create a new ConnectionService for your new connection.
-    /// The Stream you provide will be wired into a `protosocket::Connection`.
-    fn accept_stream(
+    /// The Stream will be wired into a `protosocket::Connection`. You can look at it in here
+    /// if it has data you want (like a SocketAddr).
+    fn new_stream_service(
         &self,
-        stream: <Self::SocketListener as SocketListener>::RawSocketConnection,
-    ) -> impl Future<Output = std::io::Result<(Self::Stream, Self::ConnectionService)>> + Send + 'static;
+        _stream: &<Self::SocketListener as SocketListener>::Stream,
+    ) -> Self::ConnectionService;
 }
 
 /// A strategy for spawning connections.
@@ -60,7 +51,7 @@ pub trait SpawnConnection<TSocketService: SocketService>: Clone {
     fn spawn_connection(
         &self,
         connection: Connection<
-            TSocketService::Stream,
+            <<TSocketService as SocketService>::SocketListener as SocketListener>::Stream,
             TSocketService::RequestDecoder,
             TSocketService::ResponseEncoder,
             RpcSubmitter<TSocketService>,
@@ -69,7 +60,7 @@ pub trait SpawnConnection<TSocketService: SocketService>: Clone {
     );
 }
 
-/// When all of the stuff in your `Connection` is `Send`, you can use a TokioSpawnConnection.
+/// When everything in your `SocketService` is `Send`, you can use a TokioSpawnConnection.
 #[derive(Debug)]
 pub struct TokioSpawnConnection<TSocketService> {
     _phantom: PhantomData<TSocketService>,
@@ -94,11 +85,14 @@ where
     TSocketService::RequestDecoder: Send,
     TSocketService::ResponseEncoder: Send,
     <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
+    <TSocketService::SocketListener as SocketListener>::Stream: Send,
+    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
+    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
 {
     fn spawn_connection(
         &self,
         connection: Connection<
-            <TSocketService as SocketService>::Stream,
+            <<TSocketService as SocketService>::SocketListener as SocketListener>::Stream,
             <TSocketService as SocketService>::RequestDecoder,
             <TSocketService as SocketService>::ResponseEncoder,
             RpcSubmitter<TSocketService>,
@@ -128,9 +122,9 @@ pub trait ConnectionService: Send + Unpin + 'static {
     /// The type of response message, These messages complete rpcs, or are streamed from them.
     type Response: Message;
     /// The type of future that completes a unary rpc.
-    type UnaryFutureType: Future<Output = Self::Response> + Send + Unpin;
+    type UnaryFutureType: Future<Output = Self::Response> + Unpin;
     /// The type of stream that completes a streaming rpc.
-    type StreamType: futures::Stream<Item = Self::Response> + Send + Unpin;
+    type StreamType: futures::Stream<Item = Self::Response> + Unpin;
 
     /// Create a new rpc task completion.
     ///

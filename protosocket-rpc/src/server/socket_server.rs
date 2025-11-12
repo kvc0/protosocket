@@ -1,17 +1,17 @@
 use protosocket::Connection;
 use protosocket::Encoder;
+use protosocket::SocketListener;
+use protosocket::SocketResult;
 use std::future::Future;
 use std::io::Error;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
 
 use crate::server::server_traits::SpawnConnection;
 use crate::server::server_traits::TokioSpawnConnection;
-use crate::server::socket_listener::SocketListener;
-use crate::server::socket_listener::SocketResult;
+use crate::server::ConnectionService;
 
 use super::connection_server::RpcConnectionServer;
 use super::rpc_submitter::RpcSubmitter;
@@ -32,8 +32,6 @@ where
 {
     socket_server: TSocketService,
     spawner: TSpawnConnection,
-    in_progress_connections:
-        JoinSet<std::io::Result<(TSocketService::Stream, TSocketService::ConnectionService)>>,
     listener: TSocketService::SocketListener,
     max_buffer_length: usize,
     buffer_allocation_increment: usize,
@@ -46,8 +44,14 @@ where
     TSocketService::RequestDecoder: Send,
     TSocketService::ResponseEncoder: Send,
     <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
+    <TSocketService::SocketListener as SocketListener>::Stream: Send,
+    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
+    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
 {
     /// Construct a new `SocketRpcServer` with a listener.
+    ///
+    /// This assumes a Tokio runtime, and is only available when your `SocketService` is
+    /// transitively `Send`.
     pub async fn new(
         listener: TSocketService::SocketListener,
         socket_server: TSocketService,
@@ -85,7 +89,6 @@ where
         Ok(Self {
             socket_server,
             spawner,
-            in_progress_connections: Default::default(),
             listener,
             max_buffer_length,
             buffer_allocation_increment,
@@ -119,71 +122,42 @@ where
         loop {
             break match self.listener.poll_accept(context) {
                 Poll::Ready(result) => match result {
-                    SocketResult::Socket(new_connection) => {
-                        let accept_future = self.socket_server.accept_stream(new_connection);
-                        self.in_progress_connections.spawn(accept_future);
+                    SocketResult::Stream(stream) => {
+                        let connection_service = self.socket_server.new_stream_service(&stream);
+                        let (submitter, inbound_messages) = RpcSubmitter::new();
+                        let (outbound_messages, outbound_messages_receiver) =
+                            mpsc::channel(self.max_queued_outbound_messages);
+                        let connection_rpc_server = RpcConnectionServer::new(
+                            connection_service,
+                            inbound_messages,
+                            outbound_messages,
+                        );
+                        let connection: Connection<
+                            <TSocketService::SocketListener as SocketListener>::Stream,
+                            TSocketService::RequestDecoder,
+                            TSocketService::ResponseEncoder,
+                            RpcSubmitter<TSocketService>,
+                        > = Connection::new(
+                            stream,
+                            self.socket_server.decoder(),
+                            self.socket_server.encoder(),
+                            self.max_buffer_length,
+                            self.buffer_allocation_increment,
+                            self.max_queued_outbound_messages,
+                            outbound_messages_receiver,
+                            submitter,
+                        );
+                        self.spawner
+                            .spawn_connection(connection, connection_rpc_server);
                         continue;
                     }
-                    SocketResult::Disconnect => {
-                        break;
-                    }
+                    SocketResult::Disconnect => Poll::Ready(Ok(())),
                 },
                 Poll::Pending => {
                     // hooray, listener is pending.
-                }
-            };
-        }
-        loop {
-            break match self.in_progress_connections.poll_join_next(context) {
-                Poll::Ready(Some(Ok(connection_result))) => {
-                    match connection_result {
-                        Ok((stream, connection_service)) => {
-                            let spawner = self.spawner.clone();
-                            let (submitter, inbound_messages) = RpcSubmitter::new();
-                            let (outbound_messages, outbound_messages_receiver) =
-                                mpsc::channel(self.max_queued_outbound_messages);
-                            let connection_rpc_server = RpcConnectionServer::new(
-                                connection_service,
-                                inbound_messages,
-                                outbound_messages,
-                            );
-                            let connection: Connection<
-                                TSocketService::Stream,
-                                TSocketService::RequestDecoder,
-                                TSocketService::ResponseEncoder,
-                                RpcSubmitter<TSocketService>,
-                            > = Connection::new(
-                                stream,
-                                self.socket_server.decoder(),
-                                self.socket_server.encoder(),
-                                self.max_buffer_length,
-                                self.buffer_allocation_increment,
-                                self.max_queued_outbound_messages,
-                                outbound_messages_receiver,
-                                submitter,
-                            );
-                            spawner.spawn_connection(connection, connection_rpc_server);
-                        }
-                        Err(e) => {
-                            log::error!("failed to connect stream: {e:?}");
-                        }
-                    }
-                    continue;
-                }
-                Poll::Ready(Some(Err(join_error))) => {
-                    log::error!("error joining connection in progress. {join_error:?}");
-                    continue;
-                }
-                Poll::Ready(None) => {
-                    // no connections to drive right now. Listener is pending though, so task is pending.
-                    Poll::Pending
-                }
-                Poll::Pending => {
-                    // driving connections, but none are ready
                     Poll::Pending
                 }
             };
         }
-        // in progress connections is pending
     }
 }
