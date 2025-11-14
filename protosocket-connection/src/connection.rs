@@ -97,6 +97,8 @@ impl<
     /// 3. Dispatch messages as they are deserialized using the user-provided MessageReactor.
     /// 4. Serialize messages from outbound_messages queue, up to max_queued_send_messages.
     /// 5. Send serialized messages.
+    // #[tracing::instrument(skip(self), fields(self.name = %self.name))]
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         // Step 1-3: Receive messages and react to them.
         if self.as_mut().poll_receive(context).is_ready() {
@@ -185,6 +187,7 @@ impl<
     }
 
     /// ensure buffer state and read from the inbound stream
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn poll_read_inbound(&mut self, context: &mut Context<'_>) -> ReadBufferState {
         if self.receive_buffer.len() < self.max_buffer_length
             && self.receive_buffer.len() - self.receive_buffer_unread_index
@@ -206,6 +209,7 @@ impl<
     }
 
     /// process the receive buffer, deserializing bytes into messages
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn read_inbound_messages_and_react(&mut self) -> ReadBufferState {
         let mut buffer_cursor = 0;
         let state = loop {
@@ -265,6 +269,7 @@ impl<
     }
 
     /// read from the TcpStream
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn poll_read_from_stream(&mut self, context: &mut Context<'_>) -> ReadBufferState {
         let mut buffer = ReadBuf::new(&mut self.receive_buffer[self.receive_buffer_unread_index..]);
         match pin!(&mut self.stream).poll_read(context, &mut buffer) {
@@ -301,6 +306,7 @@ impl<
     }
 
     /// This serializes work-in-progress messages and moves them over into the write queue
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let max_outbound = self.max_queued_send_messages - self.outbound_messages.len();
         if max_outbound == 0 {
@@ -362,6 +368,7 @@ impl<
     }
 
     /// Send buffers to the tcp stream, and recycle them if they are fully written
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn poll_writev_buffers(
         &mut self,
         context: &mut Context<'_>,
@@ -469,6 +476,7 @@ impl<
         }
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     fn poll_receive(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
         loop {
             match self.poll_read_inbound(context) {
