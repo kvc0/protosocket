@@ -72,6 +72,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin + 'static> AsyncWrite for StreamWithAddre
     ) -> Poll<Result<(), std::io::Error>> {
         pin!(&mut self.stream).poll_shutdown(context)
     }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        pin!(&mut self.stream).poll_write_vectored(context, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
 }
 
 /// A socket listener for TCP

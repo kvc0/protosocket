@@ -1,6 +1,4 @@
-use std::{
-    ops::{Deref, DerefMut},
-};
+use std::ops::{Deref, DerefMut};
 
 use crate::Encoder;
 
@@ -60,19 +58,27 @@ where
     type Message = TSerializer::Message;
     type Serialized = Reusable;
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, name = "pooled_encode"))]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip_all, name = "pooled_encode")
+    )]
     fn encode(&mut self, message: Self::Message) -> Self::Serialized {
         let mut buffer = self.buffer_pool.pop().unwrap_or_default();
         self.serializer.serialize_into_buffer(message, &mut buffer);
         Reusable::new(buffer)
     }
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, name = "pooled_return"))]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip_all, name = "pooled_return")
+    )]
     fn return_buffer(&mut self, buffer: Self::Serialized) {
         if self.buffer_pool.len() < self.max_pooled {
             let mut buffer: Vec<u8> = buffer.inner;
             // SAFETY: u8 does not require drop and can be treated as MaybeUninit even when initialized.
-            unsafe { buffer.set_len(0); }
+            unsafe {
+                buffer.set_len(0);
+            }
             self.buffer_pool.push(buffer);
         }
     }

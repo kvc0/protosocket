@@ -13,7 +13,6 @@ use tokio::net::TcpStream;
 mod messages;
 mod tracing_stuff;
 
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     static I: AtomicUsize = AtomicUsize::new(0);
     let runtime = tokio::runtime::Builder::new_multi_thread()

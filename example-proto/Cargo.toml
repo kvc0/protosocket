@@ -13,7 +13,7 @@ name = "example-proto-client"
 path = "src/client.rs"
 
 [dependencies]
-protosocket             = { workspace = true, features = ["tracing"]}
+protosocket             = { workspace = true }#, features = ["tracing"]}
 protosocket-prost       = { workspace = true }
 protosocket-rpc         = { workspace = true }
 protosocket-server      = { workspace = true }
