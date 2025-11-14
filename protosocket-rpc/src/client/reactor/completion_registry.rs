@@ -14,8 +14,8 @@ where
     Inbound: Message,
 {
     #[allow(clippy::type_complexity)]
-    in_flight_submission: Arc<Mutex<HashMap<u64, CompletionState<Inbound>>>>,
-    in_flight_buffer: HashMap<u64, CompletionState<Inbound>>,
+    in_flight_submission: Arc<Mutex<Vec<(u64, CompletionState<Inbound>)>>>,
+    in_flight_buffer: Vec<(u64, CompletionState<Inbound>)>,
     in_flight: HashMap<u64, Completion<Inbound>>,
 }
 
@@ -51,7 +51,7 @@ where
             // used, it's for O(1) time.
             std::mem::swap(&mut self.in_flight_buffer, &mut *in_flight_submission);
         }
-        for (command_id, completion_state) in self.in_flight_buffer.drain() {
+        for (command_id, completion_state) in self.in_flight_buffer.drain(..) {
             match completion_state {
                 CompletionState::InProgress(completion) => {
                     self.in_flight.insert(command_id, completion);
@@ -81,7 +81,7 @@ where
     Outbound: Message,
 {
     closed: bool,
-    in_flight_submission: Arc<Mutex<HashMap<u64, CompletionState<Inbound>>>>,
+    in_flight_submission: Arc<Mutex<Vec<(u64, CompletionState<Inbound>)>>>,
     message_id: u64,
     raw_submission_queue: tokio::sync::mpsc::Sender<Outbound>,
 }
@@ -106,7 +106,7 @@ where
             .lock()
             .expect("brief internal mutex must work")
             // This doesn't result in a prompt wake of the reactor
-            .insert(self.message_id, CompletionState::Done);
+            .push((self.message_id, CompletionState::Done));
         if !self.closed {
             if let Err(e) = self
                 .raw_submission_queue
@@ -125,7 +125,7 @@ pub struct RpcRegistrar<Inbound>
 where
     Inbound: Message,
 {
-    in_flight_submission: Arc<Mutex<HashMap<u64, CompletionState<Inbound>>>>,
+    in_flight_submission: Arc<Mutex<Vec<(u64, CompletionState<Inbound>)>>>,
 }
 
 impl<Inbound> Clone for RpcRegistrar<Inbound>
@@ -158,7 +158,7 @@ where
         self.in_flight_submission
             .lock()
             .expect("brief internal mutex must work")
-            .insert(message_id, CompletionState::InProgress(completion));
+            .push((message_id, CompletionState::InProgress(completion)));
         CompletionGuard {
             in_flight_submission: self.in_flight_submission.clone(),
             message_id,
