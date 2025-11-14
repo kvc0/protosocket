@@ -69,7 +69,7 @@ impl SocketService for DemoRpcSocketService {
     }
 
     fn encoder(&self) -> Self::ResponseEncoder {
-        Self::ResponseEncoder::default()
+        Self::ResponseEncoder::new_with_pool_size(64, Default::default())
     }
 
     fn new_stream_service(&self, stream: &StreamWithAddress<TcpStream>) -> Self::ConnectionService {

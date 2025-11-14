@@ -1,6 +1,5 @@
 use std::{
     ops::{Deref, DerefMut},
-    sync::Arc,
 };
 
 use crate::Encoder;
@@ -17,7 +16,8 @@ pub trait Serialize {
 /// are reset and reused to minimize allocation cost.
 pub struct PooledEncoder<TSerializer> {
     serializer: TSerializer,
-    reused_buffers: Arc<crossbeam::queue::ArrayQueue<Vec<u8>>>,
+    buffer_pool: Vec<Vec<u8>>,
+    max_pooled: usize,
 }
 
 impl<TSerializer> PooledEncoder<TSerializer>
@@ -38,7 +38,8 @@ where
     pub fn new_with_pool_size(pool_size: usize, serializer: TSerializer) -> Self {
         Self {
             serializer,
-            reused_buffers: Arc::new(crossbeam::queue::ArrayQueue::new(pool_size)),
+            buffer_pool: Vec::with_capacity(pool_size),
+            max_pooled: pool_size,
         }
     }
 }
@@ -60,9 +61,18 @@ where
     type Serialized = Reusable;
 
     fn encode(&mut self, message: Self::Message) -> Self::Serialized {
-        let mut buffer = self.reused_buffers.pop().unwrap_or_default();
+        let mut buffer = self.buffer_pool.pop().unwrap_or_default();
         self.serializer.serialize_into_buffer(message, &mut buffer);
-        Reusable::new(buffer, self.reused_buffers.clone())
+        Reusable::new(buffer)
+    }
+
+    fn return_buffer(&mut self, buffer: Self::Serialized) {
+        if self.buffer_pool.len() < self.max_pooled {
+            let mut buffer: Vec<u8> = buffer.inner;
+            // SAFETY: u8 does not require drop and can be treated as MaybeUninit even when initialized.
+            unsafe { buffer.set_len(0); }
+            self.buffer_pool.push(buffer);
+        }
     }
 }
 
@@ -71,24 +81,14 @@ where
 pub struct Reusable {
     inner: Vec<u8>,
     cursor: usize,
-    reused_buffers: Arc<crossbeam::queue::ArrayQueue<Vec<u8>>>,
 }
 
 impl Reusable {
-    fn new(buffer: Vec<u8>, reused_buffers: Arc<crossbeam::queue::ArrayQueue<Vec<u8>>>) -> Self {
+    fn new(buffer: Vec<u8>) -> Self {
         Self {
             inner: buffer,
             cursor: 0,
-            reused_buffers,
         }
-    }
-}
-
-impl Drop for Reusable {
-    fn drop(&mut self) {
-        self.inner.clear();
-        // don't worry about it if the reuse queue is full
-        let _ = self.reused_buffers.push(std::mem::take(&mut self.inner));
     }
 }
 
