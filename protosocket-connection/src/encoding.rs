@@ -43,7 +43,10 @@ where
     type Message = T::Message;
     type Serialized = OwnedBuffer;
 
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, name = "raw_serialize"))]
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip_all, name = "raw_serialize")
+    )]
     fn encode(&mut self, message: Self::Message) -> Self::Serialized {
         let mut buffer = Vec::new();
         self.serialize_into_buffer(message, &mut buffer);

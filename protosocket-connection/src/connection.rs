@@ -2,7 +2,6 @@ use std::{
     collections::VecDeque,
     future::Future,
     io::IoSlice,
-    mem::MaybeUninit,
     pin::{pin, Pin},
     task::{Context, Poll},
 };
@@ -386,36 +385,20 @@ impl<
                 // 16 is the lowest I've seen mention of, and I've seen 1024 more commonly.
                 const UIO_MAXIOV: usize = 128;
 
-                // Make a stack array of IoSlices, but make sure the drop rules are still
-                // compatible with cheating allocation.
-                // SAFETY: This assert should ensure drop of unitialized data is the same
-                //         as an element-wise drop.
-                const {
-                    assert!(!std::mem::needs_drop::<IoSlice>());
-                }
-                let mut buffers = unsafe {
-                    std::mem::transmute::<[MaybeUninit<IoSlice>; UIO_MAXIOV], [IoSlice; UIO_MAXIOV]>(
-                        [MaybeUninit::<IoSlice>::uninit(); UIO_MAXIOV],
-                    )
-                };
+                let buffers: Vec<IoSlice> = self
+                    .send_buffer
+                    .iter()
+                    .take(UIO_MAXIOV)
+                    .map(|v| IoSlice::new(v.chunk()))
+                    .collect();
 
-                // Fill the io array with io vectors
-                let mut iov = 0;
-                let mut buffer_slice = buffers.as_mut_slice();
-                for buffer in &self.send_buffer {
-                    let distance = buffer.chunks_vectored(buffer_slice);
-                    iov += distance;
-                    if iov == UIO_MAXIOV {
-                        break;
-                    }
-                    buffer_slice = &mut buffer_slice[distance..];
-                }
-                let initialized_slice = &buffers[..iov];
-
-                #[cfg(feature = "tracing")] let span = tracing::span!(tracing::Level::INFO, "writing", buffers=initialized_slice.len());
-                #[cfg(feature = "tracing")] let span_guard = span.enter();
-                let poll = pin!(&mut self.stream).poll_write_vectored(context, initialized_slice);
-                #[cfg(feature = "tracing")] drop(span_guard);
+                #[cfg(feature = "tracing")]
+                let span = tracing::span!(tracing::Level::INFO, "writing", buffers = buffers.len());
+                #[cfg(feature = "tracing")]
+                let span_guard = span.enter();
+                let poll = pin!(&mut self.stream).poll_write_vectored(context, &buffers);
+                #[cfg(feature = "tracing")]
+                drop(span_guard);
                 match poll {
                     Poll::Pending => {
                         log::debug!("writev not ready - waiting for wake");
