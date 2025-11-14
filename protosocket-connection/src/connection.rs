@@ -452,7 +452,8 @@ impl<
                 let remaining = front.remaining();
                 if remaining <= written {
                     written -= remaining;
-                    log::trace!("dropping consumed buffer after sending final {remaining}b");
+                    log::trace!("returning consumed buffer after sending final {remaining}b");
+                    self.encoder.return_buffer(front);
                 } else {
                     // Walk the buffer forward. It needs to be the next bytes on the wire, so we'll put it back in front.
                     // Partial buffer consumption is relatively uncommon, but it definitely happens.

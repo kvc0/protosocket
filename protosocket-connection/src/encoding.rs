@@ -13,6 +13,13 @@ pub trait Encoder {
 
     /// Encode a message into a buffer.
     fn encode(&mut self, message: Self::Message) -> Self::Serialized;
+
+    /// Buffers are sent back to the encoder once the message is sent.
+    /// Buffers are not guaranteed to be advanced to the end.
+    /// You can reset and reuse your buffer, if appropriate.
+    fn return_buffer(&mut self, _buffer: Self::Serialized) {
+        // drop by default
+    }
 }
 
 /// A decoder takes inbound bytes and produces messages.
