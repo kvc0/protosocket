@@ -11,6 +11,8 @@ use protosocket_rpc::{
 use tokio::net::TcpStream;
 
 mod messages;
+mod tracing_stuff;
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     static I: AtomicUsize = AtomicUsize::new(0);
@@ -32,6 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[allow(clippy::expect_used)]
 async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
+    tracing_stuff::set_default_tracer("proto-server");
+
     let mut server = protosocket_rpc::server::SocketRpcServer::new(
         TcpSocketListener::listen(
             std::env::var("HOST")
