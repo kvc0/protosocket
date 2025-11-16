@@ -39,8 +39,11 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     let max_concurrent = 255;
+    let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
     let concurrent_count = Arc::new(AtomicUsize::new(0));
-    for _i in 0..1 {
+    let mut configuration = Configuration::new(TcpStreamConnector);
+    configuration.max_queued_outbound_messages(32);
+    for _i in 0..8 {
         let (client, connection) = protosocket_rpc::client::connect::<
             PooledEncoder<ProstSerializer<Request>>,
             ProstDecoder<Response>,
@@ -50,14 +53,13 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "127.0.0.1:9000".to_string())
                 .parse()
                 .expect("must use a valid socket address"),
-            &Configuration::new(TcpStreamConnector),
+            &configuration,
         )
         .await?;
         let _connection_handle = tokio::spawn(connection);
-        let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
         let _client_handle = tokio::spawn(generate_traffic(
             concurrent_count.clone(),
-            concurrency_limit,
+            concurrency_limit.clone(),
             client,
             response_count.clone(),
             latency.clone(),
@@ -138,7 +140,13 @@ async fn generate_traffic(
             .acquire_owned() => {
                 permit.expect("semaphore works")
             }
-            _ = wip.select_next_some() => {
+            _ = async {
+                if wip.is_empty() {
+                    std::future::pending().await
+                } else {
+                    wip.select_next_some().await
+                }
+             } => {
                 // completed one
                 continue
             }
