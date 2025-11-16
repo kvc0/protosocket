@@ -308,7 +308,7 @@ impl<
     /// This serializes work-in-progress messages and moves them over into the write queue
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
-        let max_outbound = self.max_queued_send_messages - self.outbound_message_buffer.len();
+        let max_outbound = self.max_queued_send_messages - self.send_buffer.len();
         if max_outbound == 0 {
             log::debug!("send is full: {self}");
             // pending on a network status event
