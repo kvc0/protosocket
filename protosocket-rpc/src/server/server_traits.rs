@@ -104,6 +104,50 @@ where
     }
 }
 
+/// When everything in your `SocketService` is `Send`, and you want a connection to be thread-pinned, you can use a LevelSpawnConnection.
+#[derive(Debug)]
+pub struct LevelSpawnConnection<TSocketService> {
+    _phantom: PhantomData<TSocketService>,
+}
+impl<TSocketService> Default for LevelSpawnConnection<TSocketService> {
+    fn default() -> Self {
+        Self {
+            _phantom: Default::default(),
+        }
+    }
+}
+impl<TSocketService> Clone for LevelSpawnConnection<TSocketService> {
+    fn clone(&self) -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+impl<TSocketService> SpawnConnection<TSocketService> for LevelSpawnConnection<TSocketService>
+where
+    TSocketService: SocketService,
+    TSocketService::RequestDecoder: Send,
+    TSocketService::ResponseEncoder: Send,
+    <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
+    <TSocketService::SocketListener as SocketListener>::Stream: Send,
+    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
+    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
+{
+    fn spawn_connection(
+        &self,
+        connection: Connection<
+            <<TSocketService as SocketService>::SocketListener as SocketListener>::Stream,
+            <TSocketService as SocketService>::RequestDecoder,
+            <TSocketService as SocketService>::ResponseEncoder,
+            RpcSubmitter<TSocketService>,
+        >,
+        server: RpcConnectionServer<<TSocketService as SocketService>::ConnectionService>,
+    ) {
+        level_runtime::spawn_local(connection);
+        level_runtime::spawn_local(server);
+    }
+}
+
 /// A connection service receives rpcs from clients and sends responses.
 ///
 /// Each client connection gets a ConnectionService. You put your per-connection state in your

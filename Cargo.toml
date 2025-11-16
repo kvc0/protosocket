@@ -7,10 +7,11 @@ members = [
     "example-proto",
     "example-proto-tls",
     "example-telnet",
+    "level-runtime",
     "protosocket-connection",
+    "protosocket-messagepack",
     "protosocket-prost",
     "protosocket-rpc",
-    "protosocket-messagepack",
     "protosocket-server",
 ]
 
@@ -27,6 +28,7 @@ categories = ["web-programming"]
 
 
 [workspace.dependencies]
+level-runtime           = { path = "level-runtime", version = "0" }
 protosocket             = { path = "protosocket-connection", version = "0" }
 protosocket-messagepack = { path = "protosocket-messagepack" }
 protosocket-rpc         = { path = "protosocket-rpc" }

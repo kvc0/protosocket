@@ -1,0 +1,15 @@
+[package]
+name = "level-runtime"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+log                     = { workspace = true }
+rand                    = { workspace = true }
+tokio                   = { workspace = true }

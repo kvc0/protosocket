@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+level-runtime           = { workspace = true }
 protosocket             = { workspace = true }
 
 futures                 = { workspace = true }
