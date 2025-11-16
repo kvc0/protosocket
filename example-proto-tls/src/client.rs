@@ -38,9 +38,14 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
-    let max_concurrent = 32;
+    let max_concurrent = 256;
     let concurrent_count = Arc::new(AtomicUsize::new(0));
 
+    let mut configuration = Configuration::new(UnverifiedTlsStreamConnector::new(
+        "localhost".try_into().expect("must be a valid server name"),
+    ));
+    let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
+    configuration.max_queued_outbound_messages(32);
     for _i in 0..8 {
         let (client, connection) = protosocket_rpc::client::connect::<
             PooledEncoder<ProstSerializer<Request>>,
@@ -51,16 +56,13 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "127.0.0.1:9000".to_string())
                 .parse()
                 .expect("must use a valid socket address"),
-            &Configuration::new(UnverifiedTlsStreamConnector::new(
-                "localhost".try_into().expect("must be a valid server name"),
-            )),
+            &configuration,
         )
         .await?;
         let _connection_handle = tokio::spawn(connection);
-        let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
         let _client_handle = tokio::spawn(generate_traffic(
             concurrent_count.clone(),
-            concurrency_limit,
+            concurrency_limit.clone(),
             client,
             response_count.clone(),
             latency.clone(),
@@ -119,7 +121,7 @@ async fn print_periodic_metrics(
             .map(|b| *b.range().end())
             .unwrap_or_default() as f64
             / 1000.0;
-        let concurrent = concurrent_count.load(std::sync::atomic::Ordering::Relaxed);
+        let concurrent = concurrent_count.load(std::sync::atomic::Ordering::Acquire);
         eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}");
     }
 }
@@ -141,7 +143,13 @@ async fn generate_traffic(
             .acquire_owned() => {
                 permit.expect("semaphore works")
             }
-            _ = wip.select_next_some() => {
+            _ = async {
+                if wip.is_empty() {
+                    std::future::pending().await
+                } else {
+                    wip.select_next_some().await
+                }
+            }=> {
                 // completed one
                 continue
             }
@@ -172,7 +180,7 @@ async fn generate_traffic(
                     wip.spawn(async move {
                         let response = completion.await.expect("response must be successful");
                         handle_response(response, metrics_count, metrics_latency);
-                        concurrent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        concurrent_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
                         drop(permit);
                     })
                     .expect("can spawn");

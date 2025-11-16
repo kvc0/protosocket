@@ -38,9 +38,9 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
-    let max_concurrent = 32;
+    let max_concurrent = 255;
     let concurrent_count = Arc::new(AtomicUsize::new(0));
-    for _i in 0..8 {
+    for _i in 0..1 {
         let (client, connection) = protosocket_rpc::client::connect::<
             PooledEncoder<ProstSerializer<Request>>,
             ProstDecoder<Response>,

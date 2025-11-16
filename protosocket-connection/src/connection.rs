@@ -65,7 +65,8 @@ impl<
         let read_capacity = self.receive_buffer.len();
         let write_queue = self.send_buffer.len();
         let write_length: usize = self.send_buffer.iter().map(|b| b.remaining()).sum();
-        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}}}}")
+        let outbound_message_length = self.outbound_message_buffer.len();
+        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}}, outbound: {outbound_message_length}}}")
     }
 }
 
@@ -307,7 +308,7 @@ impl<
     /// This serializes work-in-progress messages and moves them over into the write queue
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
-        let max_outbound = self.max_queued_send_messages - self.outbound_messages.len();
+        let max_outbound = self.max_queued_send_messages - self.outbound_message_buffer.len();
         if max_outbound == 0 {
             log::debug!("send is full: {self}");
             // pending on a network status event
