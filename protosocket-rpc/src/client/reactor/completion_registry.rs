@@ -81,6 +81,7 @@ where
     Outbound: Message,
 {
     closed: bool,
+    #[allow(clippy::type_complexity)]
     in_flight_submission: Arc<Mutex<Vec<(u64, CompletionState<Inbound>)>>>,
     message_id: u64,
     raw_submission_queue: tokio::sync::mpsc::Sender<Outbound>,
@@ -125,6 +126,7 @@ pub struct RpcRegistrar<Inbound>
 where
     Inbound: Message,
 {
+    #[allow(clippy::type_complexity)]
     in_flight_submission: Arc<Mutex<Vec<(u64, CompletionState<Inbound>)>>>,
 }
 

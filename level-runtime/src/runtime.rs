@@ -7,6 +7,11 @@ use crate::worker::{LevelWorker, LevelWorkerHandle};
 
 static GLOBAL_RUNTIME: OnceLock<LevelRuntimeHandle> = OnceLock::new();
 
+/// Spawn a task on one of the local runtimes, with a work balance heuristic.
+///
+/// Use this when you can do your work on any runtime and it does not matter which.
+/// Be mindful of cross-runtime synchronization and await, which is more costly in
+/// a level runtime than a regular tokio multi-thread runtime.
 #[track_caller]
 pub fn spawn_balanced<F>(future: F) -> JoinHandle<F::Output>
 where
@@ -24,6 +29,9 @@ where
     }
 }
 
+/// Spawn a copy of a task on each local runtime.
+///
+/// Use this to place a server listener on each of your thread local threads.
 #[track_caller]
 pub fn spawn_on_each<F>(future: impl Fn() -> F) -> Vec<JoinHandle<F::Output>>
 where
@@ -41,44 +49,47 @@ where
     }
 }
 
-pub fn balance() -> LevelWorkerHandle {
-    match GLOBAL_RUNTIME
-        .get()
-        .map(|runtime| balance_workers(&runtime.workers))
-    {
-        Some(handle) => handle.clone(),
-        None => {
-            panic!("spawn_balanced can only be called in processes running a default level worker")
-        }
-    }
-}
-
+/// A wrapper for a collection of tokio current-thread runtimes.
+///
+/// It offers a load leveling heuristic, but not work stealing.
 pub struct LevelRuntime {
     workers: Vec<LevelWorker>,
+    thread_name: std::sync::Arc<dyn Fn() -> String + Send + Sync + 'static>,
 }
 impl LevelRuntime {
-    pub(crate) fn from_workers(workers: Vec<LevelWorker>) -> Self {
-        Self { workers }
+    pub(crate) fn from_workers(
+        thread_name: std::sync::Arc<dyn Fn() -> String + Send + Sync + 'static>,
+        workers: Vec<LevelWorker>,
+    ) -> Self {
+        Self {
+            workers,
+            thread_name,
+        }
     }
 
+    /// Register this LevelRuntime as the default runtime for the static
+    /// `level_runtime::spawn*` family functions.
     pub fn set_default(&self) {
         if GLOBAL_RUNTIME.set(self.handle()).is_err() {
             panic!("must only set one default level runtime per process")
         }
     }
 
+    /// Get a spawn handle for the runtime.
     pub fn handle(&self) -> LevelRuntimeHandle {
         LevelRuntimeHandle {
             workers: self.workers.iter().map(LevelWorker::handle).collect(),
         }
     }
 
+    /// Execute this runtime.
     pub fn run(self) {
         let handles: Vec<_> = self
             .workers
             .into_iter()
             .map(|worker| {
                 std::thread::Builder::new()
+                    .name((self.thread_name)())
                     .spawn(move || {
                         worker.run();
                     })
@@ -91,12 +102,15 @@ impl LevelRuntime {
     }
 }
 
+/// A handle to a LevelRuntime for spawning tasks.
 #[derive(Clone)]
 pub struct LevelRuntimeHandle {
     workers: Vec<LevelWorkerHandle>,
 }
 
 impl LevelRuntimeHandle {
+    /// Spawn this future on one of the workers; choose which one based
+    /// on a load heuristic.
     #[track_caller]
     pub fn spawn_balanced<F>(&self, future: F) -> JoinHandle<F::Output>
     where
@@ -106,6 +120,8 @@ impl LevelRuntimeHandle {
         balance_workers(&self.workers).spawn_local(future)
     }
 
+    /// Spawn a copy of this future on each runtime. Do this for server listeners
+    /// using SO_REUSEADDR.
     #[track_caller]
     pub fn spawn_on_each<F>(&self, future: impl Fn() -> F) -> Vec<JoinHandle<F::Output>>
     where

@@ -13,6 +13,7 @@ name = "example-proto-client"
 path = "src/client.rs"
 
 [dependencies]
+level-runtime           = { workspace = true }
 protosocket             = { workspace = true }#, features = ["tracing"]}
 protosocket-prost       = { workspace = true }
 protosocket-rpc         = { workspace = true }
