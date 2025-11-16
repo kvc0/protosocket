@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             )
         })
-        .worker_threads(2)
+        .worker_threads(4)
         .event_interval(7)
         .enable_all()
         .build()?;
@@ -38,12 +38,12 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
-    let max_concurrent = 255;
-    let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
+    let max_concurrent = 32;
     let concurrent_count = Arc::new(AtomicUsize::new(0));
     let mut configuration = Configuration::new(TcpStreamConnector);
     configuration.max_queued_outbound_messages(32);
     for _i in 0..8 {
+        let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
         let (client, connection) = protosocket_rpc::client::connect::<
             PooledEncoder<ProstSerializer<Request>>,
             ProstDecoder<Response>,
