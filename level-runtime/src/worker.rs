@@ -9,9 +9,17 @@ use tokio::task::JoinHandle;
 use crate::concurrency_tracker::ConcurrencyTracker;
 
 thread_local! {
-    static LOCAL_RUNTIME: RefCell<Option<LevelWorkerHandle>> = RefCell::new(None);
+    static LOCAL_RUNTIME: RefCell<Option<LevelWorkerHandle>> = const { RefCell::new(None) }
 }
 
+/// Spawn this future on this local thread runtime.
+///
+/// You should generally replace your `tokio::spawn` with this. By using
+/// `spawn_local` instead of `tokio::spawn`, you give the load heuristic
+/// more information.
+///
+/// If your work truly does not have a thread affinity consideration, use
+/// `spawn_balanced` instead.
 #[track_caller]
 pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
 where
@@ -30,6 +38,7 @@ where
     }
 }
 
+/// A thread-local runtime wrapper
 pub struct LevelWorker {
     runtime: tokio::runtime::Runtime,
     concurrency: Arc<AtomicUsize>,
@@ -54,6 +63,7 @@ impl LevelWorker {
         self.runtime.block_on(std::future::pending())
     }
 
+    /// A spawn handle for the local runtime
     pub fn handle(&self) -> LevelWorkerHandle {
         LevelWorkerHandle {
             handle: self.runtime.handle().clone(),
@@ -62,6 +72,7 @@ impl LevelWorker {
     }
 }
 
+/// A spawn handle for the local runtime
 #[derive(Clone)]
 pub struct LevelWorkerHandle {
     handle: tokio::runtime::Handle,
@@ -69,6 +80,7 @@ pub struct LevelWorkerHandle {
 }
 
 impl LevelWorkerHandle {
+    /// Spawn the future on this thread's local runtime
     #[track_caller]
     pub fn spawn_local<F>(&self, future: F) -> JoinHandle<F::Output>
     where
@@ -79,6 +91,7 @@ impl LevelWorkerHandle {
             .spawn(ConcurrencyTracker::wrap(self.concurrency.clone(), future))
     }
 
+    /// How many tasks are currently spawned on this level worker?
     pub fn concurrency(&self) -> usize {
         self.concurrency.load(std::sync::atomic::Ordering::Relaxed)
     }
