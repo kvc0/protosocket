@@ -7,7 +7,7 @@ use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, Respons
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    server::{ConnectionService, LevelSpawnConnection, RpcKind, SocketService},
+    server::{ConnectionService, LevelSpawn, RpcKind, SocketService},
     ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
@@ -49,7 +49,7 @@ async fn run_main() -> Result<(), std::io::Error> {
             4 << 20,
             1 << 20,
             128,
-            LevelSpawnConnection::default(),
+            LevelSpawn::default(),
         )
         .await
         .expect("must be able to listen");

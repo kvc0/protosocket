@@ -13,7 +13,7 @@ fn main() {
     Connection::new(
         stream,
         BulkDecoder::default(),
-        BulkEncoder::default(),
+        BulkEncoder,
         64,
         64,
         8,

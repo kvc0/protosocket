@@ -14,7 +14,7 @@ fn get_tracer_provider() -> opentelemetry_sdk::trace::SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .build()
-        .unwrap();
+        .expect("can make otlp exporter");
 
     opentelemetry_sdk::trace::SdkTracerProvider::builder()
         // Customize sampling strategy

@@ -9,11 +9,9 @@ use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
 
-use crate::server::server_traits::SpawnConnection;
-use crate::server::server_traits::TokioSpawnConnection;
 use crate::server::ConnectionService;
+use crate::server::Spawn;
 
-use super::connection_server::RpcConnectionServer;
 use super::rpc_submitter::RpcSubmitter;
 use super::server_traits::SocketService;
 
@@ -38,13 +36,25 @@ where
     max_queued_outbound_messages: usize,
 }
 
-impl<TSocketService> SocketRpcServer<TSocketService, TokioSpawnConnection<TSocketService>>
+impl<TSocketService>
+    SocketRpcServer<
+        TSocketService,
+        super::TokioSpawn<
+            Connection<
+                <TSocketService::SocketListener as SocketListener>::Stream,
+                TSocketService::RequestDecoder,
+                TSocketService::ResponseEncoder,
+                RpcSubmitter<TSocketService::ConnectionService>,
+            >,
+        >,
+    >
 where
     TSocketService: SocketService,
     TSocketService::RequestDecoder: Send,
     TSocketService::ResponseEncoder: Send,
     <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
     <TSocketService::SocketListener as SocketListener>::Stream: Send,
+    TSocketService::ConnectionService: Send,
     <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
     <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
 {
@@ -65,7 +75,7 @@ where
             max_buffer_length,
             buffer_allocation_increment,
             max_queued_outbound_messages,
-            TokioSpawnConnection::default(),
+            super::TokioSpawn::default(),
         )
         .await
     }
@@ -74,7 +84,14 @@ where
 impl<TSocketService, TSpawnConnection> SocketRpcServer<TSocketService, TSpawnConnection>
 where
     TSocketService: SocketService,
-    TSpawnConnection: SpawnConnection<TSocketService>,
+    TSpawnConnection: Spawn<
+        Connection<
+            <TSocketService::SocketListener as SocketListener>::Stream,
+            TSocketService::RequestDecoder,
+            TSocketService::ResponseEncoder,
+            RpcSubmitter<TSocketService::ConnectionService>,
+        >,
+    >,
 {
     /// Construct a new `SocketRpcServer` with a listener and a spawner.
     #[allow(clippy::too_many_arguments)]
@@ -114,7 +131,14 @@ impl<TSocketService, TSpawnConnection> Unpin for SocketRpcServer<TSocketService,
 impl<TSocketService, TSpawnConnection> Future for SocketRpcServer<TSocketService, TSpawnConnection>
 where
     TSocketService: SocketService,
-    TSpawnConnection: SpawnConnection<TSocketService>,
+    TSpawnConnection: Spawn<
+        Connection<
+            <TSocketService::SocketListener as SocketListener>::Stream,
+            TSocketService::RequestDecoder,
+            TSocketService::ResponseEncoder,
+            RpcSubmitter<TSocketService::ConnectionService>,
+        >,
+    >,
 {
     type Output = Result<(), Error>;
 
@@ -124,19 +148,15 @@ where
                 Poll::Ready(result) => match result {
                     SocketResult::Stream(stream) => {
                         let connection_service = self.socket_server.new_stream_service(&stream);
-                        let (submitter, inbound_messages) = RpcSubmitter::new();
                         let (outbound_messages, outbound_messages_receiver) =
                             mpsc::channel(self.max_queued_outbound_messages);
-                        let connection_rpc_server = RpcConnectionServer::new(
-                            connection_service,
-                            inbound_messages,
-                            outbound_messages,
-                        );
+                        let submitter = RpcSubmitter::new(connection_service, outbound_messages);
+                        #[allow(clippy::type_complexity)]
                         let connection: Connection<
                             <TSocketService::SocketListener as SocketListener>::Stream,
                             TSocketService::RequestDecoder,
                             TSocketService::ResponseEncoder,
-                            RpcSubmitter<TSocketService>,
+                            RpcSubmitter<TSocketService::ConnectionService>,
                         > = Connection::new(
                             stream,
                             self.socket_server.decoder(),
@@ -147,8 +167,7 @@ where
                             outbound_messages_receiver,
                             submitter,
                         );
-                        self.spawner
-                            .spawn_connection(connection, connection_rpc_server);
+                        self.spawner.spawn(connection);
                         continue;
                     }
                     SocketResult::Disconnect => Poll::Ready(Ok(())),
