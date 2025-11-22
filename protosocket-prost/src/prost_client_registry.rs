@@ -72,7 +72,7 @@ where
     where
         Request: prost::Message + Default + Unpin + 'static,
         Response: prost::Message + Default + Unpin + 'static,
-        Reactor: MessageReactor<Inbound = Response>,
+        Reactor: MessageReactor<Inbound = Response> + Send,
     {
         let address: std::net::SocketAddr = address.into().parse()?;
         let stream = TcpStream::connect(address)

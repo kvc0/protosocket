@@ -14,7 +14,7 @@ fn vec_or_unsafe_array(criterion: &mut Criterion) {
             let buffer: Vec<IoSlice<'_>> = source_material
                 .iter()
                 .take(UIO_MAXIOV)
-                .map(|buffer| IoSlice::new(&buffer))
+                .map(|buffer| IoSlice::new(buffer))
                 .collect();
             black_box(buffer);
         });
@@ -28,9 +28,10 @@ fn vec_or_unsafe_array(criterion: &mut Criterion) {
                 assert!(!std::mem::needs_drop::<IoSlice>());
             }
             let mut buffers = unsafe {
-                std::mem::transmute::<_, [IoSlice; UIO_MAXIOV]>(
-                    [MaybeUninit::<IoSlice>::uninit(); UIO_MAXIOV],
-                )
+                std::mem::transmute::<
+                    [std::mem::MaybeUninit<std::io::IoSlice<'_>>; 128],
+                    [IoSlice; UIO_MAXIOV],
+                >([MaybeUninit::<IoSlice>::uninit(); UIO_MAXIOV])
             };
             let mut iov = 0;
             let mut buffer_slice = buffers.as_mut_slice();

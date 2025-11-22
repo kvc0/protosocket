@@ -1,11 +1,8 @@
-use std::{future::Future, marker::PhantomData};
+use std::future::Future;
 
-use protosocket::{Connection, Decoder, Encoder, SocketListener};
+use protosocket::{Decoder, Encoder, SocketListener};
 
-use crate::{
-    server::{connection_server::RpcConnectionServer, rpc_submitter::RpcSubmitter},
-    Message,
-};
+use crate::Message;
 
 /// SocketService receives connections and produces ConnectionServices.
 ///
@@ -44,110 +41,6 @@ pub trait SocketService: 'static {
     ) -> Self::ConnectionService;
 }
 
-/// A strategy for spawning connections.
-/// Some Connections may not be Send
-pub trait SpawnConnection<TSocketService: SocketService>: Clone {
-    /// Spawn a connection driver task and a connection server task.
-    fn spawn_connection(
-        &self,
-        connection: Connection<
-            <<TSocketService as SocketService>::SocketListener as SocketListener>::Stream,
-            TSocketService::RequestDecoder,
-            TSocketService::ResponseEncoder,
-            RpcSubmitter<TSocketService>,
-        >,
-        server: RpcConnectionServer<<TSocketService as SocketService>::ConnectionService>,
-    );
-}
-
-/// When everything in your `SocketService` is `Send`, you can use a TokioSpawnConnection.
-#[derive(Debug)]
-pub struct TokioSpawnConnection<TSocketService> {
-    _phantom: PhantomData<TSocketService>,
-}
-impl<TSocketService> Default for TokioSpawnConnection<TSocketService> {
-    fn default() -> Self {
-        Self {
-            _phantom: Default::default(),
-        }
-    }
-}
-impl<TSocketService> Clone for TokioSpawnConnection<TSocketService> {
-    fn clone(&self) -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-impl<TSocketService> SpawnConnection<TSocketService> for TokioSpawnConnection<TSocketService>
-where
-    TSocketService: SocketService,
-    TSocketService::RequestDecoder: Send,
-    TSocketService::ResponseEncoder: Send,
-    <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
-    <TSocketService::SocketListener as SocketListener>::Stream: Send,
-    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
-    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
-{
-    fn spawn_connection(
-        &self,
-        connection: Connection<
-            <<TSocketService as SocketService>::SocketListener as SocketListener>::Stream,
-            <TSocketService as SocketService>::RequestDecoder,
-            <TSocketService as SocketService>::ResponseEncoder,
-            RpcSubmitter<TSocketService>,
-        >,
-        server: RpcConnectionServer<<TSocketService as SocketService>::ConnectionService>,
-    ) {
-        tokio::spawn(connection);
-        tokio::spawn(server);
-    }
-}
-
-/// When everything in your `SocketService` is `Send`, and you want a connection to be thread-pinned, you can use a LevelSpawnConnection.
-#[derive(Debug)]
-pub struct LevelSpawnConnection<TSocketService> {
-    _phantom: PhantomData<TSocketService>,
-}
-impl<TSocketService> Default for LevelSpawnConnection<TSocketService> {
-    fn default() -> Self {
-        Self {
-            _phantom: Default::default(),
-        }
-    }
-}
-impl<TSocketService> Clone for LevelSpawnConnection<TSocketService> {
-    fn clone(&self) -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-impl<TSocketService> SpawnConnection<TSocketService> for LevelSpawnConnection<TSocketService>
-where
-    TSocketService: SocketService,
-    TSocketService::RequestDecoder: Send,
-    TSocketService::ResponseEncoder: Send,
-    <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
-    <TSocketService::SocketListener as SocketListener>::Stream: Send,
-    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
-    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
-{
-    fn spawn_connection(
-        &self,
-        connection: Connection<
-            <<TSocketService as SocketService>::SocketListener as SocketListener>::Stream,
-            <TSocketService as SocketService>::RequestDecoder,
-            <TSocketService as SocketService>::ResponseEncoder,
-            RpcSubmitter<TSocketService>,
-        >,
-        server: RpcConnectionServer<<TSocketService as SocketService>::ConnectionService>,
-    ) {
-        level_runtime::spawn_local(connection);
-        level_runtime::spawn_local(server);
-    }
-}
-
 /// A connection service receives rpcs from clients and sends responses.
 ///
 /// Each client connection gets a ConnectionService. You put your per-connection state in your
@@ -160,7 +53,7 @@ where
 /// This means you get `&mut self` when you are called with a new rpc. You can use simple mutable
 /// state per-connection; but if you need to share state between connections or elsewhere in your
 /// application, you will need to use an appropriate state sharing mechanism.
-pub trait ConnectionService: Send + Unpin + 'static {
+pub trait ConnectionService: Unpin + 'static {
     /// The type of request message, These messages initiate rpcs.
     type Request: Message;
     /// The type of response message, These messages complete rpcs, or are streamed from them.

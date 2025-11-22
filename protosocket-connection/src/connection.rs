@@ -101,11 +101,13 @@ impl<
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         // Step 1-3: Receive messages and react to them.
+        log::trace!("polling receive");
         if self.as_mut().poll_receive(context).is_ready() {
             return Poll::Ready(());
         }
 
         // Step 4-5: Serialize and send outbound messages
+        log::trace!("polling write");
         match self.poll_writev_buffers(context) {
             Ok(false) => {
                 log::trace!("write stream is empty or registered for wake when writable");
@@ -120,6 +122,18 @@ impl<
             }
         }
 
+        // NOTE: This has to happen after messages are processed, because otherwise any associated downstream
+        // futures might not get polled.
+        // SAFETY: This is a structural pin. The reactor is never moved while the Connection is pinned.
+        let structurally_pinned_reactor =
+            unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.reactor) };
+        if matches!(
+            structurally_pinned_reactor.poll(context),
+            Poll::Ready(ReactorStatus::Disconnect)
+        ) {
+            log::debug!("reactor requested disconnect during poll");
+            return Poll::Ready(());
+        }
         Poll::Pending
     }
 }
@@ -326,6 +340,7 @@ impl<
                         self.max_queued_send_messages,
                     ) {
                         Poll::Ready(count) => {
+                            log::trace!("received {count} outbound messages");
                             // ugh, I know. but poll_recv_many is much cheaper than poll_recv,
                             // and poll_recv requires &mut Vec. Otherwise this would be a VecDeque with no reverse.
                             self.outbound_message_buffer.reverse();
