@@ -25,7 +25,7 @@ where
 {
     connection_server: TConnectionServer,
     outbound: PollSender<<TConnectionServer as ConnectionService>::Response>,
-    aborts: HashMap<u64, IdentifiableAbortHandle>,
+    aborts: HashMap<u64, IdentifiableAbortHandle, ahash::RandomState>,
     outstanding_unary_rpcs:
         FuturesUnordered<IdentifiableAbortable<TConnectionServer::UnaryFutureType>>,
     outstanding_streaming_rpcs: SelectAll<IdentifiableAbortable<TConnectionServer::StreamType>>,

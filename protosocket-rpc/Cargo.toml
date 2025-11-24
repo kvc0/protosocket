@@ -14,6 +14,7 @@ categories.workspace = true
 level-runtime           = { workspace = true }
 protosocket             = { workspace = true }
 
+ahash                   = { workspace = true }
 futures                 = { workspace = true }
 k-lock                  = { workspace = true }
 log                     = { workspace = true }

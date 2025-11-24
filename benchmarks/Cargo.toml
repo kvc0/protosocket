@@ -17,6 +17,13 @@ bench = false
 name = "safety_perf"
 harness = false
 
+[[bench]]
+name = "channel"
+harness = false
+
 [dev-dependencies]
 bytes                   = { workspace = true }
-criterion               = { workspace = true }
+criterion               = { workspace = true, features = ["async_tokio"] }
+futures                 = { workspace = true }
+rand                    = { workspace = true }
+tokio                   = { workspace = true, features = ["full"] }
