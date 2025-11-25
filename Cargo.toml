@@ -13,6 +13,7 @@ members = [
     "protosocket-prost",
     "protosocket-rpc",
     "protosocket-server",
+    "spillway",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ protosocket-messagepack = { path = "protosocket-messagepack" }
 protosocket-rpc         = { path = "protosocket-rpc" }
 protosocket-server      = { path = "protosocket-server" }
 protosocket-prost       = { path = "protosocket-prost" }
+spillway                = { path = "spillway" }
 
 ahash                   = { version = "0" }
 bytes                   = { version = "1.6" }
