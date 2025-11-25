@@ -46,7 +46,7 @@ impl ServerConnector for ServerContext {
 
     fn new_reactor(
         &self,
-        optional_outbound: tokio::sync::mpsc::Sender<<Self::ResponseEncoder as Encoder>::Message>,
+        optional_outbound: spillway::Sender<<Self::ResponseEncoder as Encoder>::Message>,
         _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {
         StringReactor {
@@ -68,7 +68,7 @@ impl ServerConnector for ServerContext {
 }
 
 struct StringReactor {
-    outbound: tokio::sync::mpsc::Sender<String>,
+    outbound: spillway::Sender<String>,
 }
 impl MessageReactor for StringReactor {
     type Inbound = String;
@@ -84,7 +84,7 @@ impl MessageReactor for StringReactor {
                 .unwrap_or(0);
             tokio::time::sleep(Duration::from_secs(seconds)).await;
             message.push_str(" RAN");
-            if let Err(e) = outbound.send(message).await {
+            if let Err(e) = outbound.send(message) {
                 log::error!("send error: {e:?}");
             }
         });

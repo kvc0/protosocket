@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use protosocket::{pooled_encoder::PooledEncoder, Connection, MessageReactor};
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::net::TcpStream;
 
 use crate::{prost_serializer::ProstDecoder, ProstSerializer};
 
@@ -68,7 +68,7 @@ where
         &self,
         address: impl Into<String>,
         message_reactor: Reactor,
-    ) -> crate::Result<mpsc::Sender<Request>>
+    ) -> crate::Result<spillway::Sender<Request>>
     where
         Request: prost::Message + Default + Unpin + 'static,
         Response: prost::Message + Default + Unpin + 'static,
@@ -84,7 +84,7 @@ where
             .connect_stream(stream)
             .await
             .map_err(std::sync::Arc::new)?;
-        let (outbound, outbound_messages) = mpsc::channel(self.max_queued_outbound_messages);
+        let (outbound, outbound_messages) = spillway::channel(self.max_queued_outbound_messages);
         let connection = Connection::<
             TConnector::Stream,
             ProstDecoder<Response>,

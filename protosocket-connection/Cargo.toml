@@ -14,6 +14,8 @@ categories.workspace = true
 tracing = ["dep:tracing"]
 
 [dependencies]
+spillway                = { workspace = true }
+
 bytes                   = { workspace = true }
 futures                 = { workspace = true }
 log                     = { workspace = true }

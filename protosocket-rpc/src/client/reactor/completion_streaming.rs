@@ -1,9 +1,7 @@
 use std::{
-    pin::{pin, Pin},
+    pin::Pin,
     task::{Context, Poll},
 };
-
-use tokio::sync::mpsc;
 
 use super::completion_registry::CompletionGuard;
 use crate::Message;
@@ -18,10 +16,9 @@ where
     Response: Message,
     Request: Message,
 {
-    completion: mpsc::UnboundedReceiver<Response>,
+    completion: spillway::Receiver<Response>,
     completion_guard: CompletionGuard<Response, Request>,
     closed: bool,
-    nexts: Vec<Response>,
 }
 
 /// SAFETY: There is no unsafe code in this implementation
@@ -32,22 +29,19 @@ where
 {
 }
 
-const LIMIT: usize = 16;
-
 impl<Response, Request> StreamingCompletion<Response, Request>
 where
     Response: Message,
     Request: Message,
 {
     pub(crate) fn new(
-        completion: mpsc::UnboundedReceiver<Response>,
+        completion: spillway::Receiver<Response>,
         completion_guard: CompletionGuard<Response, Request>,
     ) -> Self {
         Self {
             completion,
             completion_guard,
             closed: false,
-            nexts: Vec::with_capacity(LIMIT),
         }
     }
 }
@@ -63,31 +57,15 @@ where
         if self.closed {
             return Poll::Ready(None);
         }
-        if self.nexts.is_empty() {
-            let Self {
-                completion, nexts, ..
-            } = &mut *self;
-            let received = pin!(completion).poll_recv_many(context, nexts, LIMIT);
-            match received {
-                Poll::Ready(count) => {
-                    if count == 0 {
-                        self.closed = true;
-                        self.completion_guard.set_closed();
-                        return Poll::Ready(Some(Err(crate::Error::Finished)));
-                    }
-                    // because it is a vector, we have to consume in reverse order. This is because
-                    // of the poll_recv_many argument type.
-                    nexts.reverse();
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-        match self.nexts.pop() {
-            Some(next) => Poll::Ready(Some(Ok(next))),
-            None => {
+        match self.completion.poll_next(context) {
+            Poll::Ready(Some(next)) => Poll::Ready(Some(Ok(next))),
+            Poll::Ready(None) => {
+                self.closed = true;
+                self.completion_guard.set_closed();
                 log::error!("unexpected empty nexts");
-                Poll::Ready(None)
+                Poll::Ready(Some(Err(crate::Error::Finished)))
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

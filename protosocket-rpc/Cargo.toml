@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 level-runtime           = { workspace = true }
 protosocket             = { workspace = true }
+spillway                = { workspace = true }
 
 ahash                   = { workspace = true }
 futures                 = { workspace = true }

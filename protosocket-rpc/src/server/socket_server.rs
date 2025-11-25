@@ -4,10 +4,10 @@ use protosocket::SocketListener;
 use protosocket::SocketResult;
 use std::future::Future;
 use std::io::Error;
+use std::num::NonZero;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use tokio::sync::mpsc;
 
 use crate::server::ConnectionService;
 use crate::server::Spawn;
@@ -148,8 +148,11 @@ where
                 Poll::Ready(result) => match result {
                     SocketResult::Stream(stream) => {
                         let connection_service = self.socket_server.new_stream_service(&stream);
-                        let (outbound_messages, outbound_messages_receiver) =
-                            mpsc::channel(self.max_queued_outbound_messages);
+                        let (outbound_messages, outbound_messages_receiver) = spillway::channel(
+                            std::thread::available_parallelism()
+                                .map(NonZero::get)
+                                .unwrap_or(2),
+                        );
                         let submitter = RpcSubmitter::new(connection_service, outbound_messages);
                         #[allow(clippy::type_complexity)]
                         let connection: Connection<

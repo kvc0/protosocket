@@ -1,6 +1,7 @@
+use std::num::NonZero;
 use std::sync::{atomic::AtomicBool, Arc};
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::reactor::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor};
 use super::reactor::completion_registry::{Completion, CompletionGuard, RpcRegistrar};
@@ -22,7 +23,7 @@ where
 {
     #[allow(clippy::type_complexity)]
     in_flight_submission: RpcRegistrar<Response>,
-    submission_queue: tokio::sync::mpsc::Sender<Request>,
+    submission_queue: spillway::Sender<Request>,
     is_alive: Arc<AtomicBool>,
 }
 
@@ -46,7 +47,7 @@ where
     Response: Message,
 {
     pub(crate) fn new(
-        submission_queue: mpsc::Sender<Request>,
+        submission_queue: spillway::Sender<Request>,
         message_reactor: &RpcCompletionReactor<Response, DoNothingMessageHandler<Response>>,
     ) -> Self {
         Self {
@@ -67,14 +68,16 @@ where
     ///
     /// This function only sends the request. You must consume the completion stream to get the response.
     #[must_use = "You must await the completion to get the response. If you drop the completion, the request will be cancelled."]
-    pub async fn send_streaming(
+    pub fn send_streaming(
         &self,
         request: Request,
     ) -> crate::Result<StreamingCompletion<Response, Request>> {
-        let (sender, completion) = mpsc::unbounded_channel();
-        let completion_guard = self
-            .send_message(Completion::RemoteStreaming(sender), request)
-            .await?;
+        let (sender, completion) = spillway::channel(
+            std::thread::available_parallelism()
+                .map(NonZero::get)
+                .unwrap_or(2) as usize,
+        );
+        let completion_guard = self.send_message(Completion::RemoteStreaming(sender), request)?;
 
         let completion = StreamingCompletion::new(completion, completion_guard);
 
@@ -85,21 +88,19 @@ where
     ///
     /// This function only sends the request. You must await the completion to get the response.
     #[must_use = "You must await the completion to get the response. If you drop the completion, the request will be cancelled."]
-    pub async fn send_unary(
+    pub fn send_unary(
         &self,
         request: Request,
     ) -> crate::Result<UnaryCompletion<Response, Request>> {
         let (completor, completion) = oneshot::channel();
-        let completion_guard = self
-            .send_message(Completion::Unary(completor), request)
-            .await?;
+        let completion_guard = self.send_message(Completion::Unary(completor), request)?;
 
         let completion = UnaryCompletion::new(completion, completion_guard);
 
         Ok(completion)
     }
 
-    async fn send_message(
+    fn send_message(
         &self,
         completion: Completion<Response>,
         request: Request,
@@ -115,7 +116,6 @@ where
         );
         self.submission_queue
             .send(request)
-            .await
             .map_err(|_e| crate::Error::ConnectionIsClosed)
             .map(|_| completion_guard)
     }
@@ -124,6 +124,7 @@ where
 #[cfg(test)]
 mod test {
     use std::future::Future;
+    use std::num::NonZero;
     use std::pin::pin;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
@@ -181,11 +182,15 @@ mod test {
 
     #[allow(clippy::type_complexity)]
     fn get_client() -> (
-        tokio::sync::mpsc::Receiver<u64>,
+        spillway::Receiver<u64>,
         RpcClient<u64, u64>,
         RpcCompletionReactor<u64, DoNothingMessageHandler<u64>>,
     ) {
-        let (sender, remote_end) = tokio::sync::mpsc::channel::<u64>(10);
+        let (sender, remote_end) = spillway::channel::<u64>(
+            std::thread::available_parallelism()
+                .map(NonZero::get)
+                .unwrap_or(2),
+        );
         let rpc_reactor = RpcCompletionReactor::<u64, _>::new(DoNothingMessageHandler::default());
         let client = RpcClient::new(sender, &rpc_reactor);
         (remote_end, client, rpc_reactor)
@@ -195,15 +200,17 @@ mod test {
     fn unary_drop_cancel() {
         let (mut remote_end, client, _reactor) = get_client();
 
-        let response = drive_future(client.send_unary(4)).expect("can send");
-        assert_eq!(4, remote_end.blocking_recv().expect("a request is sent"));
-        assert!(remote_end.is_empty(), "no more messages yet");
+        let response = client.send_unary(4).expect("can send");
+        assert_eq!(
+            4,
+            drive_future(remote_end.next()).expect("a request is sent")
+        );
 
         drop(response);
 
         assert_eq!(
             (1 << 32) + 4,
-            remote_end.blocking_recv().expect("a cancel is sent")
+            drive_future(remote_end.next()).expect("a cancel is sent")
         );
     }
 
@@ -211,15 +218,17 @@ mod test {
     fn streaming_drop_cancel() {
         let (mut remote_end, client, _reactor) = get_client();
 
-        let response = drive_future(client.send_streaming(4)).expect("can send");
-        assert_eq!(4, remote_end.blocking_recv().expect("a request is sent"));
-        assert!(remote_end.is_empty(), "no more messages yet");
+        let response = client.send_streaming(4).expect("can send");
+        assert_eq!(
+            4,
+            drive_future(remote_end.next()).expect("a request is sent")
+        );
 
         drop(response);
 
         assert_eq!(
             (1 << 32) + 4,
-            remote_end.blocking_recv().expect("a cancel is sent")
+            drive_future(remote_end.next()).expect("a cancel is sent")
         );
     }
 
@@ -228,7 +237,7 @@ mod test {
     struct TestConnector {
         clients: Mutex<
             Vec<(
-                mpsc::Receiver<u64>,
+                spillway::Receiver<u64>,
                 RpcClient<u64, u64>,
                 RpcCompletionReactor<u64, DoNothingMessageHandler<u64>>,
             )>,
@@ -290,15 +299,15 @@ mod test {
             "same connection shared"
         );
 
-        let _reply_a = rpc_client_a.send_unary(42).await.expect("can send");
-        let _reply_b = rpc_client_b.send_unary(43).await.expect("can send");
+        let _reply_a = rpc_client_a.send_unary(42).expect("can send");
+        let _reply_b = rpc_client_b.send_unary(43).expect("can send");
 
         let (mut remote_end, _client, _reactor) = {
             let mut clients = connector.clients.lock().expect("mutex works");
             clients.pop().expect("one client exists")
         };
-        assert_eq!(42, remote_end.recv().await.expect("request a is received"));
-        assert_eq!(43, remote_end.recv().await.expect("request b is received"));
+        assert_eq!(42, remote_end.next().await.expect("request a is received"));
+        assert_eq!(43, remote_end.next().await.expect("request b is received"));
     }
 
     #[tokio::test]

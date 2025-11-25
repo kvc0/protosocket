@@ -153,21 +153,18 @@ async fn generate_traffic(
         };
 
         if true {
-            match client
-                .send_unary(Request {
-                    request_id: i,
-                    code: ProtosocketControlCode::Normal as u32,
-                    body: Some(EchoRequest {
-                        message: i.to_string(),
-                        nanotime: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("time works")
-                            .as_nanos() as u64,
-                    }),
-                    response_behavior: ResponseBehavior::Unary as i32,
-                })
-                .await
-            {
+            match client.send_unary(Request {
+                request_id: i,
+                code: ProtosocketControlCode::Normal as u32,
+                body: Some(EchoRequest {
+                    message: i.to_string(),
+                    nanotime: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("time works")
+                        .as_nanos() as u64,
+                }),
+                response_behavior: ResponseBehavior::Unary as i32,
+            }) {
                 Ok(completion) => {
                     concurrent_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     i += 1;
@@ -189,21 +186,18 @@ async fn generate_traffic(
             }
         } else {
             // fixme: the streaming math is wrong
-            match client
-                .send_streaming(Request {
-                    request_id: i,
-                    code: ProtosocketControlCode::Normal as u32,
-                    body: Some(EchoRequest {
-                        message: i.to_string(),
-                        nanotime: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("time works")
-                            .as_nanos() as u64,
-                    }),
-                    response_behavior: ResponseBehavior::Stream as i32,
-                })
-                .await
-            {
+            match client.send_streaming(Request {
+                request_id: i,
+                code: ProtosocketControlCode::Normal as u32,
+                body: Some(EchoRequest {
+                    message: i.to_string(),
+                    nanotime: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("time works")
+                        .as_nanos() as u64,
+                }),
+                response_behavior: ResponseBehavior::Stream as i32,
+            }) {
                 Ok(mut completion) => {
                     i += 1;
                     let metrics_count = metrics_count.clone();

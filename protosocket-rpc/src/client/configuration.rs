@@ -1,7 +1,7 @@
 use protosocket::Connection;
 use socket2::TcpKeepalive;
 use std::{future::Future, net::SocketAddr, sync::Arc};
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::{
@@ -266,7 +266,8 @@ where
         Deserializer::Message,
         DoNothingMessageHandler<Deserializer::Message>,
     > = RpcCompletionReactor::new(Default::default());
-    let (outbound, outbound_messages) = mpsc::channel(configuration.max_queued_outbound_messages);
+    let (outbound, outbound_messages) =
+        spillway::channel(configuration.max_queued_outbound_messages);
     let rpc_client = RpcClient::new(outbound, &message_reactor);
     let stream = configuration
         .stream_connector
