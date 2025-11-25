@@ -1,0 +1,15 @@
+[package]
+name = "spillway"
+description = "High throughput, safe, async MPSC channel"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+futures                 = { workspace = true }
+rand                    = { workspace = true }

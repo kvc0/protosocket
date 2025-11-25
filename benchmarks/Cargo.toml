@@ -22,8 +22,12 @@ name = "channel"
 harness = false
 
 [dev-dependencies]
+spillway                = { workspace = true }
+
 bytes                   = { workspace = true }
 criterion               = { workspace = true, features = ["async_tokio"] }
+env_logger              = { workspace = true }
 futures                 = { workspace = true }
+log                     = { workspace = true }
 rand                    = { workspace = true }
 tokio                   = { workspace = true, features = ["full"] }
