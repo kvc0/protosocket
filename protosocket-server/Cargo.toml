@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 protosocket             = { workspace = true }
+spillway                = { workspace = true }
 
 bytes                   = { workspace = true }
 futures                 = { workspace = true }

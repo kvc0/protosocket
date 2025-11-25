@@ -9,7 +9,7 @@ use tokio::{
 
 fn main() {
     let (_network_in, _network_out, stream) = FakeIO::new();
-    let (message_sender, outbound_messages) = mpsc::channel(8);
+    let (message_sender, outbound_messages) = spillway::channel(4);
     Connection::new(
         stream,
         BulkDecoder::default(),

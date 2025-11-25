@@ -7,10 +7,7 @@ use std::{
 };
 
 use bytes::Buf;
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::mpsc,
-};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{
     interrupted,
@@ -40,8 +37,7 @@ pub struct Connection<
     TReactor: MessageReactor<Inbound = TDecoder::Message>,
 > {
     stream: TStream,
-    outbound_messages: mpsc::Receiver<<TEncoder as Encoder>::Message>,
-    outbound_message_buffer: Vec<<TEncoder as Encoder>::Message>,
+    outbound_messages: spillway::Receiver<<TEncoder as Encoder>::Message>,
     send_buffer: VecDeque<<TEncoder as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
@@ -65,8 +61,7 @@ impl<
         let read_capacity = self.receive_buffer.len();
         let write_queue = self.send_buffer.len();
         let write_length: usize = self.send_buffer.iter().map(|b| b.remaining()).sum();
-        let outbound_message_length = self.outbound_message_buffer.len();
-        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}}, outbound: {outbound_message_length}}}")
+        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}} }}")
     }
 }
 
@@ -180,14 +175,13 @@ impl<
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
-        outbound_messages: mpsc::Receiver<TEncoder::Message>,
+        outbound_messages: spillway::Receiver<TEncoder::Message>,
         reactor: TReactor,
     ) -> Self {
         // outbound must be queued so it can be called from any context
         Self {
             stream,
             outbound_messages,
-            outbound_message_buffer: Vec::new(),
             send_buffer: Default::default(),
             receive_buffer: Vec::new(),
             max_buffer_length,
@@ -331,36 +325,16 @@ impl<
 
         let start_len = self.send_buffer.len();
         for _ in 0..max_outbound {
-            let message = match self.outbound_message_buffer.pop() {
-                Some(next) => next,
-                None => {
-                    match self.outbound_messages.poll_recv_many(
-                        context,
-                        &mut self.outbound_message_buffer,
-                        self.max_queued_send_messages,
-                    ) {
-                        Poll::Ready(count) => {
-                            log::trace!("received {count} outbound messages");
-                            // ugh, I know. but poll_recv_many is much cheaper than poll_recv,
-                            // and poll_recv requires &mut Vec. Otherwise this would be a VecDeque with no reverse.
-                            self.outbound_message_buffer.reverse();
-                            match self.outbound_message_buffer.pop() {
-                                Some(next) => next,
-                                None => {
-                                    assert_eq!(0, count);
-                                    log::info!("outbound message channel was closed");
-                                    return Poll::Ready(());
-                                }
-                            }
-                        }
-                        Poll::Pending => {
-                            log::trace!(
-                                "no more messages to serialize, and we are pending for more"
-                            );
-                            break;
-                        }
-                    }
+            let message = match self.outbound_messages.poll_next(context) {
+                Poll::Pending => {
+                    log::trace!("no more messages to serialize, and we are pending for more");
+                    break;
                 }
+                Poll::Ready(None) => {
+                    log::info!("outbound message channel was closed");
+                    return Poll::Ready(());
+                }
+                Poll::Ready(Some(next)) => next,
             };
             let buffer = self.encoder.encode(message);
             log::trace!(

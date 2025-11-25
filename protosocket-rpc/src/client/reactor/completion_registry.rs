@@ -4,7 +4,7 @@ use std::{
 };
 
 use k_lock::Mutex;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use crate::Message;
 
@@ -84,7 +84,7 @@ where
     #[allow(clippy::type_complexity)]
     in_flight_submission: Arc<Mutex<Vec<(u64, CompletionState<Inbound>)>>>,
     message_id: u64,
-    raw_submission_queue: tokio::sync::mpsc::Sender<Outbound>,
+    raw_submission_queue: spillway::Sender<Outbound>,
 }
 
 impl<Inbound, Outbound> CompletionGuard<Inbound, Outbound>
@@ -109,12 +109,13 @@ where
             // This doesn't result in a prompt wake of the reactor
             .push((self.message_id, CompletionState::Done));
         if !self.closed {
-            if let Err(e) = self
+            if let Err(_e) = self
                 .raw_submission_queue
-                .try_send(Outbound::cancelled(self.message_id))
+                .send(Outbound::cancelled(self.message_id))
             {
                 log::error!(
-                    "unable to send cancellation for message - this will abandon server rpcs {e:?}"
+                    "unable to send cancellation for message - this will abandon server rpcs {}",
+                    self.message_id
                 );
             }
         }
@@ -155,7 +156,7 @@ where
         &self,
         message_id: u64,
         completion: Completion<Inbound>,
-        raw_submission_queue: tokio::sync::mpsc::Sender<Outbound>,
+        raw_submission_queue: spillway::Sender<Outbound>,
     ) -> CompletionGuard<Inbound, Outbound> {
         self.in_flight_submission
             .lock()
@@ -176,7 +177,7 @@ where
     Inbound: Message,
 {
     Unary(oneshot::Sender<crate::Result<Inbound>>),
-    RemoteStreaming(mpsc::UnboundedSender<Inbound>),
+    RemoteStreaming(spillway::Sender<Inbound>),
 }
 
 #[derive(Debug)]

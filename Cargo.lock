@@ -494,6 +494,7 @@ dependencies = [
  "log",
  "protosocket",
  "protosocket-server",
+ "spillway",
  "tokio",
 ]
 
@@ -1474,6 +1475,7 @@ dependencies = [
  "futures",
  "log",
  "socket2 0.6.0",
+ "spillway",
  "thiserror 1.0.63",
  "tokio",
  "tokio-rustls",
@@ -1501,6 +1503,7 @@ dependencies = [
  "log",
  "prost 0.13.1",
  "protosocket",
+ "spillway",
  "thiserror 1.0.63",
  "tokio",
 ]
@@ -1519,6 +1522,7 @@ dependencies = [
  "rand",
  "rustls-pki-types",
  "socket2 0.6.0",
+ "spillway",
  "thiserror 1.0.63",
  "tokio",
  "tokio-rustls",
@@ -1535,6 +1539,7 @@ dependencies = [
  "log",
  "protosocket",
  "socket2 0.6.0",
+ "spillway",
  "thiserror 1.0.63",
  "tokio",
 ]

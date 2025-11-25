@@ -10,7 +10,10 @@ pub struct Sender<T> {
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
         self.shared.add_sender();
-        Self { chute: self.shared.choose_chute(), shared: self.shared.clone() }
+        Self {
+            chute: self.shared.choose_chute(),
+            shared: self.shared.clone(),
+        }
     }
 }
 
@@ -25,7 +28,9 @@ impl<T> Drop for Sender<T> {
 
 impl<T> std::fmt::Debug for Sender<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Sender").field("chute", &self.chute).finish()
+        f.debug_struct("Sender")
+            .field("chute", &self.chute)
+            .finish()
     }
 }
 
@@ -38,7 +43,7 @@ impl<T> Sender<T> {
         }
     }
 
-    pub fn send(&self, value: T) {
-        self.shared.send(self.chute, value);
+    pub fn send(&self, value: T) -> Result<(), T> {
+        self.shared.send(self.chute, value)
     }
 }

@@ -6,8 +6,6 @@ use std::{
 
 use futures::stream::{FuturesUnordered, SelectAll};
 use protosocket::{MessageReactor, ReactorStatus};
-use tokio::sync::mpsc;
-use tokio_util::sync::PollSender;
 
 use crate::{
     server::{
@@ -24,7 +22,7 @@ where
     TConnectionServer: ConnectionService,
 {
     connection_server: TConnectionServer,
-    outbound: PollSender<<TConnectionServer as ConnectionService>::Response>,
+    outbound: spillway::Sender<<TConnectionServer as ConnectionService>::Response>,
     aborts: HashMap<u64, IdentifiableAbortHandle, ahash::RandomState>,
     outstanding_unary_rpcs:
         FuturesUnordered<IdentifiableAbortable<TConnectionServer::UnaryFutureType>>,
@@ -36,11 +34,11 @@ where
 {
     pub fn new(
         connection_server: TConnectionService,
-        outbound: mpsc::Sender<TConnectionService::Response>,
+        outbound: spillway::Sender<TConnectionService::Response>,
     ) -> Self {
         Self {
             connection_server,
-            outbound: PollSender::new(outbound),
+            outbound,
             aborts: Default::default(),
             outstanding_unary_rpcs: Default::default(),
             outstanding_streaming_rpcs: Default::default(),
@@ -117,28 +115,13 @@ where
         }
 
         loop {
-            match pin!(&mut self.outbound).poll_reserve(context) {
-                Poll::Ready(Ok(())) => {
-                    log::trace!("outbound connection is ready");
-                    // ready to send
-                }
-                Poll::Ready(Err(_)) => {
-                    log::debug!("outbound connection is closed");
-                    return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
-                }
-                Poll::Pending => {
-                    log::debug!("no room in outbound connection");
-                    break;
-                }
-            }
-
             match futures::Stream::poll_next(pin!(&mut self.outstanding_unary_rpcs), context) {
                 Poll::Ready(unary_done) => {
                     match unary_done {
                         Some((id, AbortableState::Ready(Ok(response)))) => {
                             self.aborts.remove(&id);
                             log::trace!("{id} unary rpc response {response:?}");
-                            if let Err(_e) = self.outbound.send_item(response) {
+                            if let Err(_e) = self.outbound.send(response) {
                                 log::debug!("outbound connection is closed");
                                 return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
                             }
@@ -167,7 +150,7 @@ where
                                 crate::Error::Finished => {
                                     log::debug!("{id} unary rpc ended");
                                     if let Some(abort) = abort {
-                                        if let Err(_e) = self.outbound.send_item(
+                                        if let Err(_e) = self.outbound.send(
                                             <TConnectionService::Response as Message>::ended(id),
                                         ) {
                                             log::debug!("outbound connection is closed");
@@ -226,88 +209,72 @@ where
             log::trace!("no outstanding streaming rpcs to advance");
             return None;
         }
-        loop {
-            match pin!(&mut self.outbound).poll_reserve(context) {
-                Poll::Ready(Ok(())) => {
-                    // ready to send
+        while let Poll::Ready(streaming_next) =
+            futures::Stream::poll_next(pin!(&mut self.outstanding_streaming_rpcs), context)
+        {
+            match streaming_next {
+                Some((id, AbortableState::Ready(Ok(next)))) => {
+                    log::debug!("{id} streaming rpc next {next:?}");
+                    if let Err(_e) = self.outbound.send(next) {
+                        log::debug!("outbound connection is closed");
+                        return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
+                    }
                 }
-                Poll::Ready(Err(_)) => {
-                    log::debug!("outbound connection is closed");
-                    return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
-                }
-                Poll::Pending => {
-                    log::debug!("no room in outbound connection");
-                    break;
-                }
-            }
-
-            match futures::Stream::poll_next(pin!(&mut self.outstanding_streaming_rpcs), context) {
-                Poll::Ready(streaming_next) => {
-                    match streaming_next {
-                        Some((id, AbortableState::Ready(Ok(next)))) => {
-                            log::debug!("{id} streaming rpc next {next:?}");
-                            if let Err(_e) = self.outbound.send_item(next) {
-                                log::debug!("outbound connection is closed");
-                                return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
-                            }
-                        }
-                        Some((id, AbortableState::Ready(Err(e)))) => {
-                            let abort = self.aborts.remove(&id);
-                            match e {
-                                crate::Error::IoFailure(error) => {
-                                    log::warn!("{id} io failure while servicing rpc: {error:?}");
-                                    if let Some(abort) = abort {
-                                        abort.abort();
-                                    }
-                                }
-                                crate::Error::CancelledRemotely => {
-                                    log::debug!("{id} rpc cancelled remotely");
-                                    if let Some(abort) = abort {
-                                        abort.abort();
-                                    }
-                                }
-                                crate::Error::ConnectionIsClosed => {
-                                    log::debug!("{id} rpc cancelled remotely");
-                                    if let Some(abort) = abort {
-                                        abort.abort();
-                                    }
-                                }
-                                crate::Error::Finished => {
-                                    log::debug!("{id} streaming rpc ended");
-                                    if let Some(abort) = abort {
-                                        if let Err(_e) = self.outbound.send_item(
-                                            <TConnectionService::Response as Message>::ended(id),
-                                        ) {
-                                            log::debug!("outbound connection is closed");
-                                            return Some(Poll::Ready(Err(
-                                                crate::Error::ConnectionIsClosed,
-                                            )));
-                                        }
-                                        abort.mark_aborted();
-                                    }
-                                }
-                            }
-                        }
-                        Some((id, AbortableState::Abort)) => {
-                            // This happens when the upstream stuff is dropped and there are no messages that can be produced. We'll send a cancellation.
-                            log::debug!("{id} streaming rpc abort");
-                            if let Some(abort) = self.aborts.remove(&id) {
+                Some((id, AbortableState::Ready(Err(e)))) => {
+                    let abort = self.aborts.remove(&id);
+                    match e {
+                        crate::Error::IoFailure(error) => {
+                            log::warn!("{id} io failure while servicing rpc: {error:?}");
+                            if let Some(abort) = abort {
                                 abort.abort();
                             }
                         }
-                        Some((id, AbortableState::Aborted)) => {
-                            log::debug!("{id} streaming rpc done");
-                            if let Some(abort) = self.aborts.remove(&id) {
+                        crate::Error::CancelledRemotely => {
+                            log::debug!("{id} rpc cancelled remotely");
+                            if let Some(abort) = abort {
+                                abort.abort();
+                            }
+                        }
+                        crate::Error::ConnectionIsClosed => {
+                            log::debug!("{id} rpc cancelled remotely");
+                            if let Some(abort) = abort {
+                                abort.abort();
+                            }
+                        }
+                        crate::Error::Finished => {
+                            log::debug!("{id} streaming rpc ended");
+                            if let Some(abort) = abort {
+                                if let Err(_e) = self
+                                    .outbound
+                                    .send(<TConnectionService::Response as Message>::ended(id))
+                                {
+                                    log::debug!("outbound connection is closed");
+                                    return Some(Poll::Ready(Err(
+                                        crate::Error::ConnectionIsClosed,
+                                    )));
+                                }
                                 abort.mark_aborted();
                             }
                         }
-                        None => {
-                            // nothing to wait for
-                            break;
-                        }
                     }
                 }
-                Poll::Pending => break,
+                Some((id, AbortableState::Abort)) => {
+                    // This happens when the upstream stuff is dropped and there are no messages that can be produced. We'll send a cancellation.
+                    log::debug!("{id} streaming rpc abort");
+                    if let Some(abort) = self.aborts.remove(&id) {
+                        abort.abort();
+                    }
+                }
+                Some((id, AbortableState::Aborted)) => {
+                    log::debug!("{id} streaming rpc done");
+                    if let Some(abort) = self.aborts.remove(&id) {
+                        abort.mark_aborted();
+                    }
+                }
+                None => {
+                    // nothing to wait for
+                    break;
+                }
             }
         }
         None
