@@ -17,11 +17,10 @@ pub struct IdentifiableAbortable<F> {
     f: F,
     aborted: Arc<AtomicUsize>,
     waker: Arc<AtomicWaker>,
-    id: u64,
 }
 
 impl<F> IdentifiableAbortable<F> {
-    pub fn new(id: u64, f: F) -> (Self, IdentifiableAbortHandle) {
+    pub fn new(f: F) -> (Self, IdentifiableAbortHandle) {
         let aborted = Arc::new(AtomicUsize::new(0));
         let waker = Arc::new(AtomicWaker::new());
         (
@@ -29,7 +28,6 @@ impl<F> IdentifiableAbortable<F> {
                 f,
                 aborted: aborted.clone(),
                 waker: waker.clone(),
-                id,
             },
             IdentifiableAbortHandle { aborted, waker },
         )
@@ -45,23 +43,26 @@ pub enum AbortableState<T> {
 
 impl<F> Future for IdentifiableAbortable<F>
 where
-    F: Future + Unpin,
+    F: Future,
 {
-    type Output = (u64, AbortableState<crate::Result<F::Output>>);
+    type Output = AbortableState<crate::Result<F::Output>>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let state = self.aborted.load(Ordering::Relaxed);
         if 1 == state {
             self.aborted.store(2, Ordering::Relaxed);
-            return Poll::Ready((self.id, AbortableState::Abort));
+            return Poll::Ready(AbortableState::Abort);
         }
         if 2 == state {
-            return Poll::Ready((self.id, AbortableState::Aborted));
+            return Poll::Ready(AbortableState::Aborted);
         }
         self.waker.register(context.waker());
-        pin!(&mut self.f)
+        // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
+        let structurally_pinned_future =
+            unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.f) };
+        structurally_pinned_future
             .poll(context)
-            .map(|output| (self.id, AbortableState::Ready(Ok(output))))
+            .map(|output| AbortableState::Ready(Ok(output)))
     }
 }
 
@@ -69,7 +70,7 @@ impl<S> Stream for IdentifiableAbortable<S>
 where
     S: Stream + Unpin,
 {
-    type Item = (u64, AbortableState<crate::Result<S::Item>>);
+    type Item = AbortableState<crate::Result<S::Item>>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.waker.register(context.waker());
@@ -79,15 +80,14 @@ where
                     Poll::Ready(next) => {
                         match next {
                             Some(next) => {
-                                Poll::Ready(Some((self.id, AbortableState::Ready(Ok(next)))))
+                                Poll::Ready(Some(AbortableState::Ready(Ok(next))))
                             }
                             None => {
                                 // stream is done
                                 self.aborted.store(3, Ordering::Relaxed);
-                                Poll::Ready(Some((
-                                    self.id,
+                                Poll::Ready(Some(
                                     AbortableState::Ready(Err(crate::Error::Finished)),
-                                )))
+                                ))
                             }
                         }
                     }
@@ -96,11 +96,11 @@ where
             }
             1 => {
                 self.aborted.store(2, Ordering::Relaxed);
-                Poll::Ready(Some((self.id, AbortableState::Abort)))
+                Poll::Ready(Some(AbortableState::Abort))
             }
             2 => {
                 self.aborted.store(3, Ordering::Relaxed);
-                Poll::Ready(Some((self.id, AbortableState::Aborted)))
+                Poll::Ready(Some(AbortableState::Aborted))
             }
             _ => Poll::Ready(None),
         }
