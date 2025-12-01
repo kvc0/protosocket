@@ -17,6 +17,7 @@ impl<T> std::fmt::Debug for Receiver<T> {
 }
 
 impl<T> Receiver<T> {
+    /// Create a new receiver with a concurrency
     pub(crate) fn new(shared: Arc<Shared<T>>) -> Self {
         Self {
             cursor: 0,

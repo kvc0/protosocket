@@ -133,7 +133,6 @@ mod test {
     use std::task::Poll;
 
     use futures::task::noop_waker_ref;
-    use tokio::sync::mpsc;
 
     use crate::client::connection_pool::ClientConnector;
     use crate::client::connection_pool::ConnectionPool;

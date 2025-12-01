@@ -1,18 +1,13 @@
 use std::{
-    collections::HashMap,
-    pin::{pin, Pin},
-    task::{Context, Poll},
+    future::Future, pin::{Pin, pin}, sync::Arc, task::{Context, Poll}
 };
 
-use futures::stream::{FuturesUnordered, SelectAll};
 use protosocket::{MessageReactor, ReactorStatus};
 
 use crate::{
-    server::{
-        abortable::{AbortableState, IdentifiableAbortHandle, IdentifiableAbortable},
-        ConnectionService, RpcKind,
-    },
-    Message, ProtosocketControlCode,
+    Message, ProtosocketControlCode, server::{
+        ConnectionService, RpcKind, abortable::{AbortableState, IdentifiableAbortable}, abortion_tracker::AbortionTracker
+    }
 };
 
 /// A MessageReactor that sends RPCs along to a sink
@@ -23,10 +18,7 @@ where
 {
     connection_server: TConnectionServer,
     outbound: spillway::Sender<<TConnectionServer as ConnectionService>::Response>,
-    aborts: HashMap<u64, IdentifiableAbortHandle, ahash::RandomState>,
-    outstanding_unary_rpcs:
-        FuturesUnordered<IdentifiableAbortable<TConnectionServer::UnaryFutureType>>,
-    outstanding_streaming_rpcs: SelectAll<IdentifiableAbortable<TConnectionServer::StreamType>>,
+    aborts: Arc<AbortionTracker>,
 }
 impl<TConnectionService> RpcSubmitter<TConnectionService>
 where
@@ -40,8 +32,6 @@ where
             connection_server,
             outbound,
             aborts: Default::default(),
-            outstanding_unary_rpcs: Default::default(),
-            outstanding_streaming_rpcs: Default::default(),
         }
     }
 }
@@ -56,14 +46,16 @@ where
         let message_id = message.message_id();
         match message.control_code() {
             ProtosocketControlCode::Normal => match self.connection_server.new_rpc(message) {
-                RpcKind::Unary(completion) => {
-                    let (abortable, abort) = IdentifiableAbortable::new(message_id, completion);
-                    self.aborts.insert(message_id, abort);
-                    self.outstanding_unary_rpcs.push(abortable);
+                RpcKind::Unary(rpc_task) => {
+                    let (abortable, abort) = IdentifiableAbortable::new(rpc_task);
+                    self.aborts.register(message_id, abort);
+                    let unary_rpc_task = ForwardAbortableUnaryRpc::new(abortable, message_id, self.outbound.clone(), self.aborts.clone());
+                    // todo: spawn
+                    // self.outstanding_unary_rpcs.push(abortable);
                 }
-                RpcKind::Streaming(completion) => {
-                    let (completion, abort) = IdentifiableAbortable::new(message_id, completion);
-                    self.aborts.insert(message_id, abort);
+                RpcKind::Streaming(rpc_task) => {
+                    let (completion, abort) = IdentifiableAbortable::new(rpc_task);
+                    self.aborts.register(message_id, abort);
                     self.outstanding_streaming_rpcs.push(completion);
                 }
                 RpcKind::Unknown => {
@@ -71,7 +63,7 @@ where
                 }
             },
             ProtosocketControlCode::Cancel => {
-                if let Some(abort) = self.aborts.remove(&message_id) {
+                if let Some(abort) = self.aborts.take_abort(message_id) {
                     log::debug!("cancelling message {message_id}");
                     abort.mark_aborted();
                 } else {
@@ -98,6 +90,105 @@ where
         }
 
         std::task::Poll::Ready(protosocket::ReactorStatus::Continue)
+    }
+}
+
+struct ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+    future: F,
+    id: u64,
+    forward: spillway::Sender<T>,
+    aborts: Arc<AbortionTracker>,
+}
+impl<F, T> Drop for ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+    fn drop(&mut self) {
+        self.aborts.take_abort(self.id);
+    }
+}
+impl<F, T> ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+    pub fn new(future: F, id: u64, forward: spillway::Sender<T>, aborts: Arc<AbortionTracker>) -> Self {
+        Self {
+            future,
+            id,
+            forward,
+            aborts,
+        }
+    }
+}
+impl<F, T> Future for ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+    type Output = ();
+    
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
+        let structurally_pinned_future =
+            unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.future) };
+        match structurally_pinned_future.poll(context) {
+            Poll::Ready(state) => {
+                let abort = self.aborts.take_abort(self.id);
+                match state {
+                    AbortableState::Ready(Ok(response)) => {
+                        log::trace!("{} unary rpc response", self.id);
+                        if let Err(_e) = self.forward.send(response) {
+                            log::debug!("outbound connection is closed");
+                        }
+                        Poll::Ready(())
+                    }
+                    AbortableState::Ready(Err(e)) => {
+                        match e {
+                            crate::Error::IoFailure(error) => {
+                                log::warn!("{} io failure while servicing rpc: {error:?}", self.id);
+                                if let Some(abort) = abort {
+                                    abort.abort();
+                                }
+                            }
+                            crate::Error::CancelledRemotely => {
+                                log::debug!("{} rpc cancelled remotely", self.id);
+                                if let Some(abort) = abort {
+                                    abort.abort();
+                                }
+                            }
+                            crate::Error::ConnectionIsClosed => {
+                                log::debug!("{} rpc cancelled remotely", self.id);
+                                if let Some(abort) = abort {
+                                    abort.abort();
+                                }
+                            }
+                            crate::Error::Finished => {
+                                log::debug!("{} unary rpc ended", self.id);
+                                if let Some(abort) = abort {
+                                    if let Err(_e) = self.forward.send(
+                                        T::ended(self.id),
+                                    ) {
+                                        log::debug!("outbound connection is closed");
+                                    }
+                                    abort.mark_aborted();
+                                }
+                            }
+                        }
+                        Poll::Ready(())
+                        // cancelled
+                    }
+                    AbortableState::Abort => {
+                        // This happens when the upstream stuff is dropped and there are no messages that can be produced. We'll send a cancellation.
+                        log::debug!("{} unary rpc abort", self.id);
+                        if let Some(abort) = abort {
+                            abort.abort();
+                        }
+                        Poll::Ready(())
+                    }
+                    AbortableState::Aborted => {
+                        // This happens when the upstream stuff is dropped and there are no messages that can be produced. We'll send a cancellation.
+                        log::debug!("{} unary rpc done", self.id);
+                        if let Some(abort) = abort {
+                            abort.mark_aborted();
+                        }
+                        Poll::Ready(())
+                    }
+                }
+            }
+            Poll::Pending => {
+                Poll::Pending
+            }
+        }
     }
 }
 

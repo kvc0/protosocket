@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::{future::Future, pin::pin};
 
 use protosocket::{Decoder, Encoder, SocketListener};
 
@@ -58,10 +58,6 @@ pub trait ConnectionService: Unpin + 'static {
     type Request: Message;
     /// The type of response message, These messages complete rpcs, or are streamed from them.
     type Response: Message;
-    /// The type of future that completes a unary rpc.
-    type UnaryFutureType: Future<Output = Self::Response> + Unpin;
-    /// The type of stream that completes a streaming rpc.
-    type StreamType: futures::Stream<Item = Self::Response> + Unpin;
 
     /// Create a new rpc task completion.
     ///
@@ -76,7 +72,40 @@ pub trait ConnectionService: Unpin + 'static {
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType>;
+    ) -> RpcKind<impl Future<Output = Self::Response>, impl futures::Stream<Item = Self::Response>>;
+}
+
+#[must_use]
+pub struct RpcResponder<Response> {
+    outbound: spillway::Sender<Response>,
+}
+impl<Response> RpcResponder<Response> {
+    pub fn unary(self, unary_rpc: impl Future<Output = Response>) -> impl Future<Output = ()> {
+        async move {
+            let response = unary_rpc.await;
+            if self.outbound.send(response).is_err() {
+                log::debug!("outbound channel is closed");
+            }
+        }
+    }
+
+    pub fn streaming(self, streaming_rpc: impl futures::Stream<Item = Response>) -> impl Future<Output = ()> {
+        async move {
+            let mut streaming_rpc = pin!(streaming_rpc);
+            while let Some(next) = futures::StreamExt::next(&mut streaming_rpc).await {
+                if self.outbound.send(next).is_err() {
+                    log::debug!("outbound channel closed during streaming response");
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn immediate(self, response: Response) {
+        if self.outbound.send(response).is_err() {
+            log::debug!("outbound channel closed while sending response");
+        }
+    }
 }
 
 /// Type of rpc to be awaited
