@@ -1,4 +1,5 @@
 /target
 Cross.toml
 .vscode
+perf.data
 

@@ -16,7 +16,7 @@ mod tracing_stuff;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = level_runtime::Builder::default()
         .thread_name_prefix("server")
-        .worker_threads(4)
+        .worker_threads(2)
         .event_interval(3)
         .global_queue_interval(7)
         .enable_all()

@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             )
         })
-        .worker_threads(4)
+        .worker_threads(2)
         .event_interval(7)
         .enable_all()
         .build()?;
