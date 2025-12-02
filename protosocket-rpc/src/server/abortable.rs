@@ -58,8 +58,7 @@ where
         }
         self.waker.register(context.waker());
         // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
-        let structurally_pinned_future =
-            unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.f) };
+        let structurally_pinned_future = unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.f) };
         structurally_pinned_future
             .poll(context)
             .map(|output| AbortableState::Ready(Ok(output)))
@@ -79,15 +78,13 @@ where
                 match pin!(&mut self.f).poll_next(context) {
                     Poll::Ready(next) => {
                         match next {
-                            Some(next) => {
-                                Poll::Ready(Some(AbortableState::Ready(Ok(next))))
-                            }
+                            Some(next) => Poll::Ready(Some(AbortableState::Ready(Ok(next)))),
                             None => {
                                 // stream is done
                                 self.aborted.store(3, Ordering::Relaxed);
-                                Poll::Ready(Some(
-                                    AbortableState::Ready(Err(crate::Error::Finished)),
-                                ))
+                                Poll::Ready(Some(AbortableState::Ready(Err(
+                                    crate::Error::Finished,
+                                ))))
                             }
                         }
                     }

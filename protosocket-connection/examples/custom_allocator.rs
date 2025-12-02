@@ -31,7 +31,7 @@ impl MessageReactor for EchoReactor {
     type Inbound = Bytes;
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> protosocket::ReactorStatus {
-        match self.outbound_messages.try_send(message) {
+        match self.outbound_messages.send(message) {
             Ok(_) => protosocket::ReactorStatus::Continue,
             Err(_) => {
                 log::error!("outbound channel overwhelmed");

@@ -3,9 +3,8 @@ use std::sync::Arc;
 use protosocket::MessageReactor;
 
 use crate::{
-    Message, ProtosocketControlCode, server::{
-        ConnectionService, abortion_tracker::AbortionTracker, rpc_responder::RpcResponder
-    }
+    server::{abortion_tracker::AbortionTracker, rpc_responder::RpcResponder, ConnectionService},
+    Message, ProtosocketControlCode,
 };
 
 /// A MessageReactor that sends RPCs along to a sink
@@ -44,7 +43,10 @@ where
         let message_id = message.message_id();
         match message.control_code() {
             ProtosocketControlCode::Normal => {
-                self.connection_server.new_rpc(message, RpcResponder::new_responder_reference(&self.outbound, &self.aborts, message_id));
+                self.connection_server.new_rpc(
+                    message,
+                    RpcResponder::new_responder_reference(&self.outbound, &self.aborts, message_id),
+                );
             }
             ProtosocketControlCode::Cancel => {
                 if let Some(abort) = self.aborts.take_abort(message_id) {

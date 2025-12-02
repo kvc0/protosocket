@@ -1,11 +1,11 @@
 use std::sync::atomic::AtomicUsize;
 
-use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
+use futures::Stream;
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{StreamWithAddress, TcpSocketListener};
 use protosocket_rpc::{
-    server::{ConnectionService, RpcKind, SocketService},
-    ProtosocketControlCode,
+    server::{ConnectionService, RpcResponder, SocketService},
+    Message, ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
 
@@ -85,23 +85,22 @@ struct DemoRpcConnectionServer {
 impl ConnectionService for DemoRpcConnectionServer {
     type Request = Request;
     type Response = Response;
-    // Ideally you'd use real Future and Stream types here for performance and debuggability.
-    // For a demo though, it's fine to use BoxFuture and BoxStream.
-    type UnaryFutureType = BoxFuture<'static, Response>;
-    type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
+        responder: RpcResponder<'_, Self::Response>,
+    ) {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
         let behavior = initiating_message.response_behavior;
         match initiating_message.body {
             Some(echo) => match behavior {
-                ResponseBehavior::Unary => RpcKind::Unary(echo_request(request_id, echo).boxed()),
+                ResponseBehavior::Unary => {
+                    responder.immediate(echo_request(request_id, echo));
+                }
                 ResponseBehavior::Stream => {
-                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
+                    tokio::spawn(responder.stream(echo_stream(request_id, echo)));
                 }
             },
             None => {
@@ -109,13 +108,13 @@ impl ConnectionService for DemoRpcConnectionServer {
                 log::warn!(
                     "{request_id} no request in rpc body. This may cause a client memory leak."
                 );
-                RpcKind::Unknown
+                responder.immediate(Response::cancelled(request_id));
             }
         }
     }
 }
 
-async fn echo_request(request_id: u64, echo: EchoRequest) -> Response {
+fn echo_request(request_id: u64, echo: EchoRequest) -> Response {
     Response {
         request_id,
         code: ProtosocketControlCode::Normal as u32,

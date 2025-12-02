@@ -5,7 +5,8 @@ use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, Respons
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener, TlsSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    Message, ProtosocketControlCode, server::{ConnectionService, RpcResponder, SocketService}
+    server::{ConnectionService, RpcResponder, SocketService},
+    Message, ProtosocketControlCode,
 };
 use rustls_pemfile::Item;
 
@@ -39,7 +40,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         rustls_pemfile::certs(&mut certpem.clone().into_bytes().as_slice()).collect();
     let certs = certs?;
 
-    let pkpem = cert.key_pair.serialize_pem();
+    let pkpem = cert.signing_key.serialize_pem();
     let mut keys: Vec<rustls_pki_types::PrivateKeyDer<'static>> =
         rustls_pemfile::read_all(&mut pkpem.clone().into_bytes().as_slice())
             .filter_map(|item| item.ok())

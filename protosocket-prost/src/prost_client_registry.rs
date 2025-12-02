@@ -70,8 +70,8 @@ where
         message_reactor: Reactor,
     ) -> crate::Result<spillway::Sender<Request>>
     where
-        Request: prost::Message + Default + Unpin + 'static,
-        Response: prost::Message + Default + Unpin + 'static,
+        Request: prost::Message + Default + Unpin + std::fmt::Debug + 'static,
+        Response: prost::Message + Default + Unpin + std::fmt::Debug + 'static,
         Reactor: MessageReactor<Inbound = Response> + Send,
     {
         let address: std::net::SocketAddr = address.into().parse()?;

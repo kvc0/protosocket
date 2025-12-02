@@ -1,6 +1,12 @@
 use std::{future::Future, pin::pin};
 
-use crate::{Message, server::{abortable::IdentifiableAbortable, abortion_tracker::AbortionTracker, forward::ForwardAbortableUnaryRpc}};
+use crate::{
+    server::{
+        abortable::IdentifiableAbortable, abortion_tracker::AbortionTracker,
+        forward::ForwardAbortableUnaryRpc,
+    },
+    Message,
+};
 
 #[must_use]
 pub struct RpcResponder<'a, Response> {
@@ -8,7 +14,10 @@ pub struct RpcResponder<'a, Response> {
     aborts: &'a std::sync::Arc<AbortionTracker>,
     message_id: u64,
 }
-impl<'a, Response> RpcResponder<'a, Response> where Response: Message {
+impl<'a, Response> RpcResponder<'a, Response>
+where
+    Response: Message,
+{
     pub(crate) fn new_responder_reference(
         outbound: &'a spillway::Sender<Response>,
         aborts: &'a std::sync::Arc<AbortionTracker>,
@@ -24,12 +33,18 @@ impl<'a, Response> RpcResponder<'a, Response> where Response: Message {
     pub fn unary(self, unary_rpc: impl Future<Output = Response>) -> impl Future<Output = ()> {
         let (abortable, abort) = IdentifiableAbortable::new(unary_rpc);
         self.aborts.register(self.message_id, abort);
-        let unary_rpc_task = ForwardAbortableUnaryRpc::new(abortable, self.message_id, self.outbound.clone(), self.aborts.clone());
-
-        unary_rpc_task
+        ForwardAbortableUnaryRpc::new(
+            abortable,
+            self.message_id,
+            self.outbound.clone(),
+            self.aborts.clone(),
+        )
     }
 
-    pub fn stream(self, streaming_rpc: impl futures::Stream<Item = Response>) -> impl Future<Output = ()> {
+    pub fn stream(
+        self,
+        streaming_rpc: impl futures::Stream<Item = Response>,
+    ) -> impl Future<Output = ()> {
         let outbound = self.outbound.clone();
         async move {
             let mut streaming_rpc = pin!(streaming_rpc);

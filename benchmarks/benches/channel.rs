@@ -50,7 +50,7 @@ fn mpsc_or_queues(criterion: &mut Criterion) {
         bencher
             .to_async(runtime(threads))
             .iter_custom(async |size| {
-                let (send, mut receive) = spillway::channel(threads);
+                let (send, mut receive) = spillway::channel_with_concurrency(threads);
                 let receiver = tokio::spawn(async move {
                     let mut i = 0;
                     while let Some(v) = receive.next().await {
