@@ -4,12 +4,10 @@ use protosocket::SocketListener;
 use protosocket::SocketResult;
 use std::future::Future;
 use std::io::Error;
-use std::num::NonZero;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::server::ConnectionService;
 use crate::server::Spawn;
 
 use super::rpc_submitter::RpcSubmitter;
@@ -55,8 +53,6 @@ where
     <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
     <TSocketService::SocketListener as SocketListener>::Stream: Send,
     TSocketService::ConnectionService: Send,
-    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
-    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
 {
     /// Construct a new `SocketRpcServer` with a listener.
     ///
@@ -148,11 +144,7 @@ where
                 Poll::Ready(result) => match result {
                     SocketResult::Stream(stream) => {
                         let connection_service = self.socket_server.new_stream_service(&stream);
-                        let (outbound_messages, outbound_messages_receiver) = spillway::channel(
-                            std::thread::available_parallelism()
-                                .map(NonZero::get)
-                                .unwrap_or(2),
-                        );
+                        let (outbound_messages, outbound_messages_receiver) = spillway::channel();
                         let submitter = RpcSubmitter::new(connection_service, outbound_messages);
                         #[allow(clippy::type_complexity)]
                         let connection: Connection<

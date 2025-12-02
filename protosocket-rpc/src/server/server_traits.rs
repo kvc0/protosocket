@@ -2,7 +2,7 @@ use std::{future::Future, pin::pin};
 
 use protosocket::{Decoder, Encoder, SocketListener};
 
-use crate::Message;
+use crate::{Message, server::{abortable::IdentifiableAbortable, rpc_responder::RpcResponder}};
 
 /// SocketService receives connections and produces ConnectionServices.
 ///
@@ -61,59 +61,10 @@ pub trait ConnectionService: Unpin + 'static {
 
     /// Create a new rpc task completion.
     ///
-    /// You can provide a concrete Future and it will be polled in the context of the Connection
-    /// itself. This would limit your Connection and all of its outstanding rpc's to 1 cpu at a time.
-    /// That might be good for your use case, or it might be suboptimal.
-    /// You can of course also spawn a task and return a completion future that completes when the
-    /// task completes, e.g., with a tokio::sync::oneshot or mpsc stream. In general, try to do as
-    /// little as possible: Return a future (rather than a task handle) and let the ConnectionServer
-    /// task poll it. This keeps your task count low and your wakes more tightly related to the
-    /// cooperating tasks (e.g., ConnectionServer and Connection) that need to be woken.
+    /// You send the response via the RpcResponder.
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-    ) -> RpcKind<impl Future<Output = Self::Response>, impl futures::Stream<Item = Self::Response>>;
-}
-
-#[must_use]
-pub struct RpcResponder<Response> {
-    outbound: spillway::Sender<Response>,
-}
-impl<Response> RpcResponder<Response> {
-    pub fn unary(self, unary_rpc: impl Future<Output = Response>) -> impl Future<Output = ()> {
-        async move {
-            let response = unary_rpc.await;
-            if self.outbound.send(response).is_err() {
-                log::debug!("outbound channel is closed");
-            }
-        }
-    }
-
-    pub fn streaming(self, streaming_rpc: impl futures::Stream<Item = Response>) -> impl Future<Output = ()> {
-        async move {
-            let mut streaming_rpc = pin!(streaming_rpc);
-            while let Some(next) = futures::StreamExt::next(&mut streaming_rpc).await {
-                if self.outbound.send(next).is_err() {
-                    log::debug!("outbound channel closed during streaming response");
-                    break;
-                }
-            }
-        }
-    }
-
-    pub fn immediate(self, response: Response) {
-        if self.outbound.send(response).is_err() {
-            log::debug!("outbound channel closed while sending response");
-        }
-    }
-}
-
-/// Type of rpc to be awaited
-pub enum RpcKind<Unary, Streaming> {
-    /// This is a unary rpc. It will complete with a single response.
-    Unary(Unary),
-    /// This is a streaming rpc. It will complete with a stream of responses.
-    Streaming(Streaming),
-    /// This is an unknown rpc. It will be skipped.
-    Unknown,
+        responder: RpcResponder<'_, Self::Response>,
+    );
 }

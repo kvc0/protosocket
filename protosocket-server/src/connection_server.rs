@@ -8,7 +8,6 @@ use protosocket::TcpSocketListener;
 use std::future::Future;
 use std::io::Error;
 use std::net::SocketAddr;
-use std::num::NonZero;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
@@ -202,11 +201,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
             break match self.listener.poll_accept(context) {
                 Poll::Ready(result) => match result {
                     SocketResult::Stream(stream) => {
-                        let (outbound_submission_queue, outbound_messages) = spillway::channel(
-                            std::thread::available_parallelism()
-                                .map(NonZero::get)
-                                .unwrap_or(2),
-                        );
+                        let (outbound_submission_queue, outbound_messages) = spillway::channel();
                         // I want to let people make their stream,reactor tuple in an async context.
                         // I want it to not require Send, so that io_uring is possible
                         // That unfortunately means that Stream might have to be internally async

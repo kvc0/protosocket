@@ -1,4 +1,3 @@
-use std::num::NonZero;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use tokio::sync::oneshot;
@@ -72,11 +71,7 @@ where
         &self,
         request: Request,
     ) -> crate::Result<StreamingCompletion<Response, Request>> {
-        let (sender, completion) = spillway::channel(
-            std::thread::available_parallelism()
-                .map(NonZero::get)
-                .unwrap_or(2) as usize,
-        );
+        let (sender, completion) = spillway::channel();
         let completion_guard = self.send_message(Completion::RemoteStreaming(sender), request)?;
 
         let completion = StreamingCompletion::new(completion, completion_guard);
@@ -124,7 +119,6 @@ where
 #[cfg(test)]
 mod test {
     use std::future::Future;
-    use std::num::NonZero;
     use std::pin::pin;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
@@ -185,11 +179,7 @@ mod test {
         RpcClient<u64, u64>,
         RpcCompletionReactor<u64, DoNothingMessageHandler<u64>>,
     ) {
-        let (sender, remote_end) = spillway::channel::<u64>(
-            std::thread::available_parallelism()
-                .map(NonZero::get)
-                .unwrap_or(2),
-        );
+        let (sender, remote_end) = spillway::channel::<u64>();
         let rpc_reactor = RpcCompletionReactor::<u64, _>::new(DoNothingMessageHandler::default());
         let client = RpcClient::new(sender, &rpc_reactor);
         (remote_end, client, rpc_reactor)
