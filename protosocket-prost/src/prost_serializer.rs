@@ -10,7 +10,7 @@ pub struct ProstSerializer<Message> {
 
 impl<Message> Serialize for ProstSerializer<Message>
 where
-    Message: prost::Message,
+    Message: prost::Message + std::fmt::Debug,
 {
     type Message = Message;
 
@@ -33,7 +33,7 @@ pub struct ProstDecoder<Message> {
 }
 impl<Message> Decoder for ProstDecoder<Message>
 where
-    Message: prost::Message + Default,
+    Message: prost::Message + Default + std::fmt::Debug,
 {
     type Message = Message;
 

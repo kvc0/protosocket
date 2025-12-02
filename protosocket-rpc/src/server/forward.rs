@@ -1,21 +1,45 @@
-use std::{future::Future, pin::Pin, sync::Arc, task::{Context, Poll}};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
-use crate::{Message, server::{abortable::AbortableState, abortion_tracker::AbortionTracker}};
+use crate::{
+    server::{abortable::AbortableState, abortion_tracker::AbortionTracker},
+    Message,
+};
 
-
-pub struct ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+pub struct ForwardAbortableUnaryRpc<F, T>
+where
+    F: Future<Output = AbortableState<crate::Result<T>>>,
+    T: Message,
+{
     future: F,
     id: u64,
     forward: spillway::Sender<T>,
     aborts: Arc<AbortionTracker>,
 }
-impl<F, T> Drop for ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+impl<F, T> Drop for ForwardAbortableUnaryRpc<F, T>
+where
+    F: Future<Output = AbortableState<crate::Result<T>>>,
+    T: Message,
+{
     fn drop(&mut self) {
         self.aborts.take_abort(self.id);
     }
 }
-impl<F, T> ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
-    pub fn new(future: F, id: u64, forward: spillway::Sender<T>, aborts: Arc<AbortionTracker>) -> Self {
+impl<F, T> ForwardAbortableUnaryRpc<F, T>
+where
+    F: Future<Output = AbortableState<crate::Result<T>>>,
+    T: Message,
+{
+    pub fn new(
+        future: F,
+        id: u64,
+        forward: spillway::Sender<T>,
+        aborts: Arc<AbortionTracker>,
+    ) -> Self {
         Self {
             future,
             id,
@@ -24,9 +48,13 @@ impl<F, T> ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableStat
         }
     }
 }
-impl<F, T> Future for ForwardAbortableUnaryRpc<F, T> where F: Future<Output = AbortableState<crate::Result<T>>>, T: Message {
+impl<F, T> Future for ForwardAbortableUnaryRpc<F, T>
+where
+    F: Future<Output = AbortableState<crate::Result<T>>>,
+    T: Message,
+{
     type Output = ();
-    
+
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
         let structurally_pinned_future =
@@ -65,9 +93,7 @@ impl<F, T> Future for ForwardAbortableUnaryRpc<F, T> where F: Future<Output = Ab
                             crate::Error::Finished => {
                                 log::debug!("{} unary rpc ended", self.id);
                                 if let Some(abort) = abort {
-                                    if let Err(_e) = self.forward.send(
-                                        T::ended(self.id),
-                                    ) {
+                                    if let Err(_e) = self.forward.send(T::ended(self.id)) {
                                         log::debug!("outbound connection is closed");
                                     }
                                     abort.mark_aborted();
@@ -95,9 +121,7 @@ impl<F, T> Future for ForwardAbortableUnaryRpc<F, T> where F: Future<Output = Ab
                     }
                 }
             }
-            Poll::Pending => {
-                Poll::Pending
-            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

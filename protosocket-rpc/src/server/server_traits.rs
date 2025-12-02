@@ -1,8 +1,9 @@
-use std::{future::Future, pin::pin};
-
 use protosocket::{Decoder, Encoder, SocketListener};
 
-use crate::{Message, server::{abortable::IdentifiableAbortable, rpc_responder::RpcResponder}};
+use crate::{
+    server::rpc_responder::RpcResponder,
+    Message,
+};
 
 /// SocketService receives connections and produces ConnectionServices.
 ///

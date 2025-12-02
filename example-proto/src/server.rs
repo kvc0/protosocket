@@ -1,12 +1,10 @@
-use futures::{
-    future::join_all,
-    FutureExt, Stream, StreamExt,
-};
+use futures::{future::join_all, Stream};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    Message, ProtosocketControlCode, server::{ConnectionService, LevelSpawn, RpcResponder, SocketService}
+    server::{ConnectionService, LevelSpawn, RpcResponder, SocketService},
+    Message, ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
 
