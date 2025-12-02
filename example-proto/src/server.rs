@@ -1,14 +1,12 @@
 use futures::{
-    future::{join_all, BoxFuture},
-    stream::BoxStream,
+    future::join_all,
     FutureExt, Stream, StreamExt,
 };
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    server::{ConnectionService, LevelSpawn, RpcKind, SocketService},
-    ProtosocketControlCode,
+    Message, ProtosocketControlCode, server::{ConnectionService, LevelSpawn, RpcResponder, SocketService}
 };
 use tokio::net::TcpStream;
 
@@ -97,37 +95,33 @@ struct DemoRpcConnectionServer {
 impl ConnectionService for DemoRpcConnectionServer {
     type Request = Request;
     type Response = Response;
-    // Ideally you'd use real Future and Stream types here for performance and debuggability.
-    // For a demo though, it's fine to use BoxFuture and BoxStream.
-    type UnaryFutureType = BoxFuture<'static, Response>;
-    type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
+        responder: RpcResponder<'_, Self::Response>,
+    ) {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
         let behavior = initiating_message.response_behavior();
         match initiating_message.body {
             Some(echo) => match behavior {
-                ResponseBehavior::Unary => RpcKind::Unary(echo_request(request_id, echo).boxed()),
+                ResponseBehavior::Unary => {
+                    responder.immediate(immediate_echo_response(request_id, echo))
+                }
                 ResponseBehavior::Stream => {
-                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
+                    tokio::spawn(responder.stream(echo_stream(request_id, echo)));
                 }
             },
             None => {
-                // No completion messages will be sent for this message
-                log::warn!(
-                    "{request_id} no request in rpc body. This may cause a client memory leak."
-                );
-                RpcKind::Unknown
+                log::warn!("received empty echo request: {initiating_message:?}");
+                responder.immediate(Response::cancelled(request_id));
             }
         }
     }
 }
 
-async fn echo_request(request_id: u64, echo: EchoRequest) -> Response {
+fn immediate_echo_response(request_id: u64, echo: EchoRequest) -> Response {
     Response {
         request_id,
         code: ProtosocketControlCode::Normal as u32,

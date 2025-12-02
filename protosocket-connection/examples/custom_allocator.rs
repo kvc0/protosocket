@@ -9,7 +9,7 @@ use tokio::{
 
 fn main() {
     let (_network_in, _network_out, stream) = FakeIO::new();
-    let (message_sender, outbound_messages) = spillway::channel(4);
+    let (message_sender, outbound_messages) = spillway::channel();
     Connection::new(
         stream,
         BulkDecoder::default(),
@@ -25,7 +25,7 @@ fn main() {
 }
 
 struct EchoReactor {
-    outbound_messages: mpsc::Sender<Bytes>,
+    outbound_messages: spillway::Sender<Bytes>,
 }
 impl MessageReactor for EchoReactor {
     type Inbound = Bytes;

@@ -266,8 +266,7 @@ where
         Deserializer::Message,
         DoNothingMessageHandler<Deserializer::Message>,
     > = RpcCompletionReactor::new(Default::default());
-    let (outbound, outbound_messages) =
-        spillway::channel(configuration.max_queued_outbound_messages);
+    let (outbound, outbound_messages) = spillway::channel();
     let rpc_client = RpcClient::new(outbound, &message_reactor);
     let stream = configuration
         .stream_connector

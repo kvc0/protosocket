@@ -84,7 +84,7 @@ where
             .connect_stream(stream)
             .await
             .map_err(std::sync::Arc::new)?;
-        let (outbound, outbound_messages) = spillway::channel(self.max_queued_outbound_messages);
+        let (outbound, outbound_messages) = spillway::channel();
         let connection = Connection::<
             TConnector::Stream,
             ProstDecoder<Response>,
