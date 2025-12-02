@@ -59,3 +59,11 @@ tokio-rustls            = { version = "0.26" }
 tokio-util              = { version = "0.7" }
 tracing                 = { version = "0.1" }
 webpki-roots            = { version = "1" }
+
+
+
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+
