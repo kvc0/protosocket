@@ -68,11 +68,12 @@ where
         &self,
         address: impl Into<String>,
         message_reactor: Reactor,
-    ) -> crate::Result<spillway::Sender<Request>>
+    ) -> crate::Result<spillway::Sender<Reactor::LogicalOutbound>>
     where
         Request: prost::Message + Default + Unpin + std::fmt::Debug + 'static,
         Response: prost::Message + Default + Unpin + std::fmt::Debug + 'static,
-        Reactor: MessageReactor<Inbound = Response> + Send,
+        Reactor: MessageReactor<Inbound = Response, Outbound = Request> + Send,
+        Reactor::LogicalOutbound: Send,
     {
         let address: std::net::SocketAddr = address.into().parse()?;
         let stream = TcpStream::connect(address)

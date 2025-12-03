@@ -17,7 +17,7 @@ pub trait ServerConnector: Unpin {
     /// Inbound message type
     type RequestDecoder: Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>;
     /// Outbound message type
-    type ResponseEncoder: Encoder;
+    type ResponseEncoder: Encoder<Message = <Self::Reactor as MessageReactor>::Outbound>;
     /// Per-connection message handler
     type Reactor: MessageReactor;
     /// The listener type for this service. E.g., `TcpSocketListener`
@@ -32,7 +32,7 @@ pub trait ServerConnector: Unpin {
     /// You can look at the connection in here if you need some data, like a SocketAddr
     fn new_reactor(
         &self,
-        optional_outbound: spillway::Sender<<Self::ResponseEncoder as Encoder>::Message>,
+        optional_outbound: spillway::Sender<<Self::Reactor as MessageReactor>::LogicalOutbound>,
         _connection: &<Self::SocketListener as SocketListener>::Stream,
     ) -> Self::Reactor;
 

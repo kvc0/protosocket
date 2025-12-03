@@ -3,11 +3,12 @@ use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::oneshot;
 
 use super::reactor::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor};
-use super::reactor::completion_registry::{Completion, CompletionGuard, RpcRegistrar};
+use super::reactor::completion_registry::{Completion, CompletionGuard};
 use super::reactor::{
     completion_streaming::StreamingCompletion, completion_unary::UnaryCompletion,
 };
 use crate::Message;
+use crate::client::reactor::completion_reactor::{CompletableRpc, RpcNotification};
 
 /// A client for sending RPCs to a protosockets rpc server.
 ///
@@ -20,9 +21,7 @@ where
     Request: Message,
     Response: Message,
 {
-    #[allow(clippy::type_complexity)]
-    in_flight_submission: RpcRegistrar<Response>,
-    submission_queue: spillway::Sender<Request>,
+    submission_queue: spillway::Sender<RpcNotification<Response, Request>>,
     is_alive: Arc<AtomicBool>,
 }
 
@@ -33,7 +32,6 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            in_flight_submission: self.in_flight_submission.clone(),
             submission_queue: self.submission_queue.clone(),
             is_alive: self.is_alive.clone(),
         }
@@ -46,12 +44,11 @@ where
     Response: Message,
 {
     pub(crate) fn new(
-        submission_queue: spillway::Sender<Request>,
-        message_reactor: &RpcCompletionReactor<Response, DoNothingMessageHandler<Response>>,
+        submission_queue: spillway::Sender<RpcNotification<Response, Request>>,
+        message_reactor: &RpcCompletionReactor<Response, Request, DoNothingMessageHandler<Response>>,
     ) -> Self {
         Self {
             submission_queue,
-            in_flight_submission: message_reactor.in_flight_submission_handle(),
             is_alive: message_reactor.alive_handle(),
         }
     }
@@ -104,13 +101,11 @@ where
             // early-out if the connection is closed
             return Err(crate::Error::ConnectionIsClosed);
         }
-        let completion_guard = self.in_flight_submission.register_completion(
-            request.message_id(),
-            completion,
-            self.submission_queue.clone(),
-        );
+        let message_id = request.message_id();
+        let completion_guard = CompletionGuard::new(message_id, self.submission_queue.clone());
+
         self.submission_queue
-            .send(request)
+            .send(RpcNotification::New(CompletableRpc { message_id, completion, request }))
             .map_err(|_e| crate::Error::ConnectionIsClosed)
             .map(|_| completion_guard)
     }
@@ -130,9 +125,11 @@ mod test {
 
     use crate::client::connection_pool::ClientConnector;
     use crate::client::connection_pool::ConnectionPool;
+    use crate::client::reactor::completion_reactor::CompletableRpc;
     use crate::client::reactor::completion_reactor::DoNothingMessageHandler;
     use crate::client::reactor::completion_reactor::RpcCompletionReactor;
     use crate::Message;
+    use crate::client::reactor::completion_reactor::RpcNotification;
 
     use super::RpcClient;
 
@@ -175,12 +172,12 @@ mod test {
 
     #[allow(clippy::type_complexity)]
     fn get_client() -> (
-        spillway::Receiver<u64>,
+        spillway::Receiver<RpcNotification<u64, u64>>,
         RpcClient<u64, u64>,
-        RpcCompletionReactor<u64, DoNothingMessageHandler<u64>>,
+        RpcCompletionReactor<u64, u64, DoNothingMessageHandler<u64>>,
     ) {
-        let (sender, remote_end) = spillway::channel::<u64>();
-        let rpc_reactor = RpcCompletionReactor::<u64, _>::new(DoNothingMessageHandler::default());
+        let (sender, remote_end) = spillway::channel();
+        let rpc_reactor = RpcCompletionReactor::<u64, u64, _>::new(DoNothingMessageHandler::default());
         let client = RpcClient::new(sender, &rpc_reactor);
         (remote_end, client, rpc_reactor)
     }
@@ -190,17 +187,14 @@ mod test {
         let (mut remote_end, client, _reactor) = get_client();
 
         let response = client.send_unary(4).expect("can send");
-        assert_eq!(
-            4,
-            drive_future(remote_end.next()).expect("a request is sent")
-        );
+
+        let notification = drive_future(remote_end.next()).expect("a request is sent");
+        assert!(matches!(notification, RpcNotification::New(CompletableRpc { message_id: 4, .. })));
 
         drop(response);
 
-        assert_eq!(
-            (1 << 32) + 4,
-            drive_future(remote_end.next()).expect("a cancel is sent")
-        );
+        let cancellation = drive_future(remote_end.next()).expect("a cancel is sent");
+        assert!(matches!(cancellation, RpcNotification::Cancel(4)));
     }
 
     #[test]
@@ -208,17 +202,14 @@ mod test {
         let (mut remote_end, client, _reactor) = get_client();
 
         let response = client.send_streaming(4).expect("can send");
-        assert_eq!(
-            4,
-            drive_future(remote_end.next()).expect("a request is sent")
-        );
+        
+        let notification = drive_future(remote_end.next()).expect("a request is sent");
+        assert!(matches!(notification, RpcNotification::New(CompletableRpc { message_id: 4, .. })));
 
         drop(response);
 
-        assert_eq!(
-            (1 << 32) + 4,
-            drive_future(remote_end.next()).expect("a cancel is sent")
-        );
+        let cancellation = drive_future(remote_end.next()).expect("a cancel is sent");
+        assert!(matches!(cancellation, RpcNotification::Cancel(4)));
     }
 
     #[allow(clippy::type_complexity)]
@@ -226,9 +217,9 @@ mod test {
     struct TestConnector {
         clients: Mutex<
             Vec<(
-                spillway::Receiver<u64>,
+                spillway::Receiver<RpcNotification<u64, u64>>,
                 RpcClient<u64, u64>,
-                RpcCompletionReactor<u64, DoNothingMessageHandler<u64>>,
+                RpcCompletionReactor<u64, u64, DoNothingMessageHandler<u64>>,
             )>,
         >,
         fail_connections: AtomicBool,
@@ -295,8 +286,8 @@ mod test {
             let mut clients = connector.clients.lock().expect("mutex works");
             clients.pop().expect("one client exists")
         };
-        assert_eq!(42, remote_end.next().await.expect("request a is received"));
-        assert_eq!(43, remote_end.next().await.expect("request b is received"));
+        assert!(matches!(remote_end.next().await.expect("request a is received"), RpcNotification::New(CompletableRpc { message_id: 42, .. })));
+        assert!(matches!(remote_end.next().await.expect("request b is received"), RpcNotification::New(CompletableRpc { message_id: 43, .. })));
     }
 
     #[tokio::test]
