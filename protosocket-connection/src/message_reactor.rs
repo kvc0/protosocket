@@ -12,7 +12,12 @@ use std::{
 /// Your message reactor and your tcp connection share their fate - when one drops or
 /// disconnects, the other does too.
 pub trait MessageReactor: 'static {
+    /// Messages inbound from the remote.
     type Inbound;
+    /// Messages outbound to a remote.
+    type Outbound;
+    /// Messages in-memory, delivered to the reactor before serialization.
+    type LogicalOutbound;
 
     /// Called from the connection's driver task when messages are received.
     ///
@@ -21,16 +26,10 @@ pub trait MessageReactor: 'static {
     /// Disconnect.
     fn on_inbound_message(&mut self, message: Self::Inbound) -> ReactorStatus;
 
-    /// Called by the driver task
+    /// Called from the connection's driver task when messages are sent.
     ///
-    /// Ready(Continue) or Pending indicates the connection should continue processing messages.
-    /// Ready(Disconnect) will close the connection.
-    ///
-    /// If you return Pending here, you must ensure that the waker will be woken when you
-    /// are ready to make more progress.
-    fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<ReactorStatus> {
-        Poll::Ready(ReactorStatus::Continue)
-    }
+    /// You can use this to track outbound messages, or to for logging or metrics.
+    fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound;
 }
 
 /// What the connection should do after processing a batch of inbound messages.

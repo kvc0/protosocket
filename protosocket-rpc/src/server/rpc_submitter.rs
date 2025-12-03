@@ -38,6 +38,8 @@ where
     TConnectionService: ConnectionService,
 {
     type Inbound = TConnectionService::Request;
+    type Outbound = TConnectionService::Response;
+    type LogicalOutbound = TConnectionService::Response;
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> protosocket::ReactorStatus {
         let message_id = message.message_id();
@@ -61,6 +63,10 @@ where
             }
         }
         protosocket::ReactorStatus::Continue
+    }
+
+    fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound {
+        message
     }
 }
 

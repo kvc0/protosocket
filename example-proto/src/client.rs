@@ -132,25 +132,12 @@ async fn generate_traffic(
 ) {
     log::debug!("running traffic generator");
     let mut i = 1;
-    let mut wip = FuturesUnordered::new();
     loop {
-        let permit = tokio::select! {
-            permit = concurrency_limit
+        let permit = concurrency_limit
             .clone()
-            .acquire_owned() => {
-                permit.expect("semaphore works")
-            }
-            _ = async {
-                if wip.is_empty() {
-                    std::future::pending().await
-                } else {
-                    wip.select_next_some().await
-                }
-             } => {
-                // completed one
-                continue
-            }
-        };
+            .acquire_owned()
+            .await
+            .expect("semaphore works");
 
         if true {
             match client.send_unary(Request {
@@ -171,13 +158,12 @@ async fn generate_traffic(
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
                     let concurrent_count: Arc<AtomicUsize> = concurrent_count.clone();
-                    wip.spawn(async move {
+                    tokio::spawn(async move {
                         let response = completion.await.expect("response must be successful");
                         handle_response(response, metrics_count, metrics_latency);
                         concurrent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                         drop(permit);
-                    })
-                    .expect("can spawn");
+                    });
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");
@@ -202,7 +188,7 @@ async fn generate_traffic(
                     i += 1;
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
-                    wip.spawn(async move {
+                    tokio::spawn(async move {
                         while let Some(Ok(response)) = completion.next().await {
                             handle_stream_response(
                                 response,
@@ -211,8 +197,7 @@ async fn generate_traffic(
                             );
                         }
                         drop(permit);
-                    })
-                    .expect("can spawn");
+                    });
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");

@@ -9,22 +9,25 @@ use protosocket::{MessageReactor, ReactorStatus};
 
 use crate::{message::ProtosocketControlCode, Message};
 
-use super::completion_registry::{Completion, CompletionRegistry, RpcRegistrar};
+use super::completion_registry::{Completion, CompletionRegistry};
 
 #[derive(Debug)]
-pub struct RpcCompletionReactor<Inbound, TUnregisteredMessageHandler>
+pub struct RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
 where
     Inbound: Message,
+    Outbound: Message,
     TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
 {
     rpc_registry: CompletionRegistry<Inbound>,
     is_alive: Arc<AtomicBool>,
     unregistered_message_handler: TUnregisteredMessageHandler,
+    _phantom: PhantomData<Outbound>,
 }
-impl<Inbound, TUnregisteredMessageHandler>
-    RpcCompletionReactor<Inbound, TUnregisteredMessageHandler>
+impl<Inbound, Outbound, TUnregisteredMessageHandler>
+    RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
 where
     Inbound: Message,
+    Outbound: Message,
     TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
 {
     #[allow(clippy::new_without_default)]
@@ -33,22 +36,20 @@ where
             rpc_registry: CompletionRegistry::new(),
             is_alive: Arc::new(AtomicBool::new(true)),
             unregistered_message_handler,
+            _phantom: PhantomData,
         }
     }
 
     pub fn alive_handle(&self) -> Arc<AtomicBool> {
         self.is_alive.clone()
     }
-
-    pub fn in_flight_submission_handle(&self) -> RpcRegistrar<Inbound> {
-        self.rpc_registry.in_flight_submission_handle()
-    }
 }
 
-impl<Inbound, TUnregisteredMessageHandler> Drop
-    for RpcCompletionReactor<Inbound, TUnregisteredMessageHandler>
+impl<Inbound, Outbound, TUnregisteredMessageHandler> Drop
+    for RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
 where
     Inbound: Message,
+    Outbound: Message,
     TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
 {
     fn drop(&mut self) {
@@ -57,17 +58,31 @@ where
     }
 }
 
-impl<Inbound, TUnregisteredMessageHandler> MessageReactor
-    for RpcCompletionReactor<Inbound, TUnregisteredMessageHandler>
+#[derive(Debug)]
+pub struct CompletableRpc<Inbound, Outbound> {
+    pub message_id: u64,
+    pub completion: Completion<Inbound>,
+    pub request: Outbound,
+}
+
+#[derive(Debug)]
+pub enum RpcNotification<Inbound, Outbound> {
+    New(CompletableRpc<Inbound, Outbound>),
+    Cancel(u64),
+}
+
+impl<Inbound, Outbound, TUnregisteredMessageHandler> MessageReactor
+    for RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
 where
     Inbound: Message,
+    Outbound: Message,
     TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
 {
     type Inbound = Inbound;
+    type Outbound = Outbound;
+    type LogicalOutbound = RpcNotification<Self::Inbound, Self::Outbound>;
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> ReactorStatus {
-        self.rpc_registry.take_new_rpc_lifecycle_actions();
-
         let message_id = message.message_id();
         match message.control_code() {
             ProtosocketControlCode::Normal => (),
@@ -105,6 +120,26 @@ where
             }
         }
         ReactorStatus::Continue
+    }
+
+    fn on_outbound_message(&mut self, notification: Self::LogicalOutbound) -> Self::Outbound {
+        match notification {
+            RpcNotification::New(completable_rpc) => {
+                log::trace!(
+                    "{} registering new rpc in completion reactor",
+                    completable_rpc.message_id
+                );
+                self.rpc_registry
+                    .entry(completable_rpc.message_id)
+                    .insert_entry(completable_rpc.completion);
+                completable_rpc.request
+            }
+            RpcNotification::Cancel(message_id) => {
+                log::trace!("{} cancelling rpc in completion reactor", message_id);
+                self.rpc_registry.deregister(message_id);
+                Outbound::cancelled(message_id)
+            }
+        }
     }
 }
 

@@ -34,10 +34,10 @@ pub struct Connection<
     // The serializer for this connection.
     TEncoder: Encoder,
     // The message reactor for this connection.
-    TReactor: MessageReactor<Inbound = TDecoder::Message>,
+    TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
 > {
     stream: TStream,
-    outbound_messages: spillway::Receiver<<TEncoder as Encoder>::Message>,
+    outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
     send_buffer: VecDeque<<TEncoder as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
@@ -53,7 +53,7 @@ impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
         TDecoder: Decoder,
         TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
     > std::fmt::Display for Connection<TStream, TDecoder, TEncoder, TReactor>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,7 +69,7 @@ impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
         TDecoder: Decoder,
         TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
     > Unpin for Connection<TStream, TDecoder, TEncoder, TReactor>
 {
 }
@@ -78,7 +78,7 @@ impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
         TDecoder: Decoder,
         TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
     > Future for Connection<TStream, TDecoder, TEncoder, TReactor>
 {
     type Output = ();
@@ -117,18 +117,6 @@ impl<
             }
         }
 
-        // NOTE: This has to happen after messages are processed, because otherwise any associated downstream
-        // futures might not get polled.
-        // SAFETY: This is a structural pin. The reactor is never moved while the Connection is pinned.
-        let structurally_pinned_reactor =
-            unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.reactor) };
-        if matches!(
-            structurally_pinned_reactor.poll(context),
-            Poll::Ready(ReactorStatus::Disconnect)
-        ) {
-            log::debug!("reactor requested disconnect during poll");
-            return Poll::Ready(());
-        }
         Poll::Pending
     }
 }
@@ -137,7 +125,7 @@ impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
         TDecoder: Decoder,
         TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
     > Drop for Connection<TStream, TDecoder, TEncoder, TReactor>
 {
     fn drop(&mut self) {
@@ -161,7 +149,7 @@ impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
         TDecoder: Decoder,
         TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message>,
+        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
     > Connection<TStream, TDecoder, TEncoder, TReactor>
 {
     /// Create a new protosocket Connection with the given stream and reactor.
@@ -175,7 +163,7 @@ impl<
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
-        outbound_messages: spillway::Receiver<TEncoder::Message>,
+        outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
         reactor: TReactor,
     ) -> Self {
         // outbound must be queued so it can be called from any context
@@ -336,6 +324,7 @@ impl<
                 }
                 Poll::Ready(Some(next)) => next,
             };
+            let message = self.reactor.on_outbound_message(message);
             let buffer = self.encoder.encode(message);
             log::trace!(
                 "serialized message and enqueueing outbound buffer: {}b",
