@@ -1,5 +1,8 @@
 use std::{
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -37,10 +40,11 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
-    let concurrency = 32;
-    let connections = 1;
+    let concurrency = 256;
+    let connections = 8;
 
     let concurrent_count = Arc::new(AtomicUsize::new(0));
+    let request_ids = Arc::new(AtomicU64::new(1));
     let mut configuration = Configuration::new(TcpStreamConnector);
     configuration.max_queued_outbound_messages(32);
     for _i in 0..connections {
@@ -61,6 +65,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..tasks {
             let _client_handle = tokio::spawn(generate_traffic(
                 concurrent_count.clone(),
+                request_ids.clone(),
                 client.clone(),
                 response_count.clone(),
                 latency.clone(),
@@ -127,13 +132,14 @@ async fn print_periodic_metrics(
 
 async fn generate_traffic(
     concurrent_count: Arc<AtomicUsize>,
+    request_ids: Arc<AtomicU64>,
     client: RpcClient<Request, Response>,
     metrics_count: Arc<AtomicUsize>,
     metrics_latency: Arc<histogram::AtomicHistogram>,
 ) {
     log::debug!("running traffic generator");
-    let mut i = 1;
     loop {
+        let i = request_ids.fetch_add(1, Ordering::Relaxed);
         if true {
             match client.send_unary(Request {
                 request_id: i,
@@ -148,16 +154,15 @@ async fn generate_traffic(
                 response_behavior: ResponseBehavior::Unary as i32,
             }) {
                 Ok(completion) => {
-                    concurrent_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    i += 1;
+                    concurrent_count.fetch_add(1, Ordering::Relaxed);
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
                     let concurrent_count: Arc<AtomicUsize> = concurrent_count.clone();
-                    tokio::spawn(async move {
-                        let response = completion.await.expect("response must be successful");
-                        handle_response(response, metrics_count, metrics_latency);
-                        concurrent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    });
+                    // tokio::spawn(async move {
+                    let response = completion.await.expect("response must be successful");
+                    handle_response(response, metrics_count, metrics_latency);
+                    concurrent_count.fetch_sub(1, Ordering::Relaxed);
+                    // });
                 }
                 Err(e) => {
                     log::error!("send should work: {e:?}");
@@ -179,7 +184,6 @@ async fn generate_traffic(
                 response_behavior: ResponseBehavior::Stream as i32,
             }) {
                 Ok(mut completion) => {
-                    i += 1;
                     let metrics_count = metrics_count.clone();
                     let metrics_latency = metrics_latency.clone();
                     tokio::spawn(async move {
