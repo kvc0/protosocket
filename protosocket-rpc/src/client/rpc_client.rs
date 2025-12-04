@@ -7,8 +7,8 @@ use super::reactor::completion_registry::{Completion, CompletionGuard};
 use super::reactor::{
     completion_streaming::StreamingCompletion, completion_unary::UnaryCompletion,
 };
-use crate::Message;
 use crate::client::reactor::completion_reactor::{CompletableRpc, RpcNotification};
+use crate::Message;
 
 /// A client for sending RPCs to a protosockets rpc server.
 ///
@@ -45,7 +45,11 @@ where
 {
     pub(crate) fn new(
         submission_queue: spillway::Sender<RpcNotification<Response, Request>>,
-        message_reactor: &RpcCompletionReactor<Response, Request, DoNothingMessageHandler<Response>>,
+        message_reactor: &RpcCompletionReactor<
+            Response,
+            Request,
+            DoNothingMessageHandler<Response>,
+        >,
     ) -> Self {
         Self {
             submission_queue,
@@ -105,7 +109,11 @@ where
         let completion_guard = CompletionGuard::new(message_id, self.submission_queue.clone());
 
         self.submission_queue
-            .send(RpcNotification::New(CompletableRpc { message_id, completion, request }))
+            .send(RpcNotification::New(CompletableRpc {
+                message_id,
+                completion,
+                request,
+            }))
             .map_err(|_e| crate::Error::ConnectionIsClosed)
             .map(|_| completion_guard)
     }
@@ -128,8 +136,8 @@ mod test {
     use crate::client::reactor::completion_reactor::CompletableRpc;
     use crate::client::reactor::completion_reactor::DoNothingMessageHandler;
     use crate::client::reactor::completion_reactor::RpcCompletionReactor;
-    use crate::Message;
     use crate::client::reactor::completion_reactor::RpcNotification;
+    use crate::Message;
 
     use super::RpcClient;
 
@@ -177,7 +185,8 @@ mod test {
         RpcCompletionReactor<u64, u64, DoNothingMessageHandler<u64>>,
     ) {
         let (sender, remote_end) = spillway::channel();
-        let rpc_reactor = RpcCompletionReactor::<u64, u64, _>::new(DoNothingMessageHandler::default());
+        let rpc_reactor =
+            RpcCompletionReactor::<u64, u64, _>::new(DoNothingMessageHandler::default());
         let client = RpcClient::new(sender, &rpc_reactor);
         (remote_end, client, rpc_reactor)
     }
@@ -189,7 +198,10 @@ mod test {
         let response = client.send_unary(4).expect("can send");
 
         let notification = drive_future(remote_end.next()).expect("a request is sent");
-        assert!(matches!(notification, RpcNotification::New(CompletableRpc { message_id: 4, .. })));
+        assert!(matches!(
+            notification,
+            RpcNotification::New(CompletableRpc { message_id: 4, .. })
+        ));
 
         drop(response);
 
@@ -202,9 +214,12 @@ mod test {
         let (mut remote_end, client, _reactor) = get_client();
 
         let response = client.send_streaming(4).expect("can send");
-        
+
         let notification = drive_future(remote_end.next()).expect("a request is sent");
-        assert!(matches!(notification, RpcNotification::New(CompletableRpc { message_id: 4, .. })));
+        assert!(matches!(
+            notification,
+            RpcNotification::New(CompletableRpc { message_id: 4, .. })
+        ));
 
         drop(response);
 
@@ -286,8 +301,14 @@ mod test {
             let mut clients = connector.clients.lock().expect("mutex works");
             clients.pop().expect("one client exists")
         };
-        assert!(matches!(remote_end.next().await.expect("request a is received"), RpcNotification::New(CompletableRpc { message_id: 42, .. })));
-        assert!(matches!(remote_end.next().await.expect("request b is received"), RpcNotification::New(CompletableRpc { message_id: 43, .. })));
+        assert!(matches!(
+            remote_end.next().await.expect("request a is received"),
+            RpcNotification::New(CompletableRpc { message_id: 42, .. })
+        ));
+        assert!(matches!(
+            remote_end.next().await.expect("request b is received"),
+            RpcNotification::New(CompletableRpc { message_id: 43, .. })
+        ));
     }
 
     #[tokio::test]

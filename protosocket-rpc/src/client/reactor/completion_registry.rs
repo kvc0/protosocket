@@ -6,7 +6,7 @@ use std::{
 use k_lock::Mutex;
 use tokio::sync::oneshot;
 
-use crate::{Message, client::reactor::completion_reactor::RpcNotification};
+use crate::{client::reactor::completion_reactor::RpcNotification, Message};
 
 #[derive(Debug, Default)]
 pub struct CompletionRegistry<Inbound>
@@ -89,8 +89,7 @@ where
 }
 
 #[derive(Debug)]
-pub enum Completion<Inbound>
-{
+pub enum Completion<Inbound> {
     Unary(oneshot::Sender<crate::Result<Inbound>>),
     RemoteStreaming(spillway::Sender<Inbound>),
 }

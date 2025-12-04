@@ -1,9 +1,6 @@
 use protosocket::{Decoder, Encoder, SocketListener};
 
-use crate::{
-    server::rpc_responder::RpcResponder,
-    Message,
-};
+use crate::{server::rpc_responder::RpcResponder, Message};
 
 /// SocketService receives connections and produces ConnectionServices.
 ///

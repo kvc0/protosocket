@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use futures::{stream::FuturesUnordered, task::SpawnExt, StreamExt};
+use futures::StreamExt;
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
 use protosocket::PooledEncoder;
 use protosocket_prost::{ProstDecoder, ProstSerializer};
@@ -11,7 +11,6 @@ use protosocket_rpc::{
     client::{Configuration, RpcClient, TcpStreamConnector},
     ProtosocketControlCode,
 };
-use tokio::sync::Semaphore;
 
 mod messages;
 
@@ -38,12 +37,13 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let response_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
-    let max_concurrent = 32;
+    let concurrency = 32;
+    let connections = 1;
+
     let concurrent_count = Arc::new(AtomicUsize::new(0));
     let mut configuration = Configuration::new(TcpStreamConnector);
     configuration.max_queued_outbound_messages(32);
-    for _i in 0..8 {
-        let concurrency_limit = Arc::new(Semaphore::new(max_concurrent));
+    for _i in 0..connections {
         let (client, connection) = protosocket_rpc::client::connect::<
             PooledEncoder<ProstSerializer<Request>>,
             ProstDecoder<Response>,
@@ -57,13 +57,15 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
         let _connection_handle = tokio::spawn(connection);
-        let _client_handle = tokio::spawn(generate_traffic(
-            concurrent_count.clone(),
-            concurrency_limit.clone(),
-            client,
-            response_count.clone(),
-            latency.clone(),
-        ));
+        let tasks = concurrency / connections;
+        for _ in 0..tasks {
+            let _client_handle = tokio::spawn(generate_traffic(
+                concurrent_count.clone(),
+                client.clone(),
+                response_count.clone(),
+                latency.clone(),
+            ));
+        }
     }
 
     let metrics = tokio::spawn(print_periodic_metrics(
@@ -125,7 +127,6 @@ async fn print_periodic_metrics(
 
 async fn generate_traffic(
     concurrent_count: Arc<AtomicUsize>,
-    concurrency_limit: Arc<Semaphore>,
     client: RpcClient<Request, Response>,
     metrics_count: Arc<AtomicUsize>,
     metrics_latency: Arc<histogram::AtomicHistogram>,
@@ -133,12 +134,6 @@ async fn generate_traffic(
     log::debug!("running traffic generator");
     let mut i = 1;
     loop {
-        let permit = concurrency_limit
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore works");
-
         if true {
             match client.send_unary(Request {
                 request_id: i,
@@ -162,7 +157,6 @@ async fn generate_traffic(
                         let response = completion.await.expect("response must be successful");
                         handle_response(response, metrics_count, metrics_latency);
                         concurrent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        drop(permit);
                     });
                 }
                 Err(e) => {
@@ -196,7 +190,6 @@ async fn generate_traffic(
                                 metrics_latency.clone(),
                             );
                         }
-                        drop(permit);
                     });
                 }
                 Err(e) => {

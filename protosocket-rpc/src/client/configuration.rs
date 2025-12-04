@@ -280,7 +280,11 @@ where
         TStreamConnector::Stream,
         Deserializer,
         Serializer,
-        RpcCompletionReactor<Deserializer::Message, Serializer::Message, DoNothingMessageHandler<Deserializer::Message>>,
+        RpcCompletionReactor<
+            Deserializer::Message,
+            Serializer::Message,
+            DoNothingMessageHandler<Deserializer::Message>,
+        >,
     >::new(
         stream,
         Deserializer::default(),
