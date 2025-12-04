@@ -286,7 +286,7 @@ impl<
             // Would block "errors" are the OS's way of saying that the
             // connection is not actually ready to perform this I/O operation.
             Poll::Ready(Err(ref err)) if would_block(err) => {
-                log::trace!("read everything. No longer readable");
+                log::debug!("read everything. No longer readable");
                 ReadBufferState::Pending
             }
             Poll::Ready(Err(ref err)) if interrupted(err) => {
@@ -297,7 +297,10 @@ impl<
                 log::warn!("error while reading from tcp stream: {err:?}");
                 ReadBufferState::Error(err)
             }
-            Poll::Pending => ReadBufferState::Pending,
+            Poll::Pending => {
+                log::debug!("pending on read stream");
+                ReadBufferState::Pending
+            }
         }
     }
 
@@ -315,7 +318,7 @@ impl<
         for _ in 0..max_outbound {
             let message = match self.outbound_messages.poll_next(context) {
                 Poll::Pending => {
-                    log::trace!("no more messages to serialize, and we are pending for more");
+                    log::debug!("no more messages to serialize, and we are pending for more");
                     break;
                 }
                 Poll::Ready(None) => {
@@ -335,10 +338,7 @@ impl<
         }
         let new_len = self.send_buffer.len();
         if start_len != new_len {
-            log::debug!(
-                "serialized {} messages, waking task to look for more input",
-                new_len - start_len
-            );
+            log::debug!("serialized {} messages", new_len - start_len);
         }
         // This portion of poll is either pending for more messages, or it is the network's turn to be pending.
         // If the network is ready, it will push buffers and re-notify serialization.
@@ -357,12 +357,12 @@ impl<
                 return Ok(true);
             }
             break if self.send_buffer.is_empty() {
-                log::trace!("send buffer is empty");
+                log::debug!("send buffer is empty");
                 Ok(false)
             } else {
                 // I need to figure out how to get this from the os rather than hardcoding.
                 // 16 is the lowest I've seen mention of, and I've seen 1024 more commonly.
-                const UIO_MAXIOV: usize = 128;
+                const UIO_MAXIOV: usize = 256;
 
                 let buffers: Vec<IoSlice> = self
                     .send_buffer
@@ -388,6 +388,7 @@ impl<
                         Ok(true)
                     }
                     Poll::Ready(Ok(written)) => {
+                        log::debug!("writev sent {written}");
                         self.advance_send_buffers(written);
                         // we need to go around again to make sure we're either done writing or pending
                         continue;
@@ -395,11 +396,11 @@ impl<
                     // Would block "errors" are the OS's way of saying that the
                     // connection is not actually ready to perform this I/O operation.
                     Poll::Ready(Err(ref err)) if would_block(err) => {
-                        log::trace!("would block - no longer writable");
+                        log::debug!("would block - no longer writable");
                         continue;
                     }
                     Poll::Ready(Err(ref err)) if interrupted(err) => {
-                        log::trace!("write interrupted - try again later");
+                        log::debug!("write interrupted - try again later");
                         continue;
                     }
                     // other errors terminate the stream
