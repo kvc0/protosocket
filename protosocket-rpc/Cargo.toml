@@ -17,7 +17,6 @@ spillway                = { workspace = true }
 
 ahash                   = { workspace = true }
 futures                 = { workspace = true }
-k-lock                  = { workspace = true }
 log                     = { workspace = true }
 rand                    = { workspace = true }
 rustls-pki-types        = { workspace = true }

@@ -1,14 +1,10 @@
 use std::collections::HashMap;
 
-use k_lock::Mutex;
-
 use crate::server::abortable::IdentifiableAbortHandle;
-
-const SLOTS: usize = 4;
 
 #[derive(Default)]
 pub struct AbortionTracker {
-    aborts: [Mutex<HashMap<u64, IdentifiableAbortHandle, ahash::RandomState>>; SLOTS],
+    aborts: HashMap<u64, IdentifiableAbortHandle, ahash::RandomState>,
 }
 
 impl std::fmt::Debug for AbortionTracker {
@@ -21,20 +17,14 @@ impl std::fmt::Debug for AbortionTracker {
 
 impl AbortionTracker {
     pub fn register(
-        &self,
+        &mut self,
         id: u64,
         handle: IdentifiableAbortHandle,
     ) -> Option<IdentifiableAbortHandle> {
-        self.aborts[id as usize & SLOTS]
-            .lock()
-            .expect("must not be poisoned")
-            .insert(id, handle)
+        self.aborts.insert(id, handle)
     }
 
-    pub fn take_abort(&self, id: u64) -> Option<IdentifiableAbortHandle> {
-        self.aborts[id as usize & SLOTS]
-            .lock()
-            .expect("must not be poisoned")
-            .remove(&id)
+    pub fn take_abort(&mut self, id: u64) -> Option<IdentifiableAbortHandle> {
+        self.aborts.remove(&id)
     }
 }

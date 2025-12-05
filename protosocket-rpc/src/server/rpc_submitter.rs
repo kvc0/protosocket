@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use protosocket::MessageReactor;
 
 use crate::{
@@ -15,7 +13,7 @@ where
 {
     connection_server: TConnectionServer,
     outbound: spillway::Sender<<TConnectionServer as ConnectionService>::Response>,
-    aborts: Arc<AbortionTracker>,
+    aborts: AbortionTracker,
 }
 impl<TConnectionService> RpcSubmitter<TConnectionService>
 where
@@ -47,7 +45,11 @@ where
             ProtosocketControlCode::Normal => {
                 self.connection_server.new_rpc(
                     message,
-                    RpcResponder::new_responder_reference(&self.outbound, &self.aborts, message_id),
+                    RpcResponder::new_responder_reference(
+                        &self.outbound,
+                        &mut self.aborts,
+                        message_id,
+                    ),
                 );
             }
             ProtosocketControlCode::Cancel => {
