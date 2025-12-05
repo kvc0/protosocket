@@ -1,9 +1,5 @@
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    sync::Arc,
-};
+use std::collections::{hash_map::Entry, HashMap};
 
-use k_lock::Mutex;
 use tokio::sync::oneshot;
 
 use crate::{client::reactor::completion_reactor::RpcNotification, Message};

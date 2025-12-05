@@ -4,7 +4,10 @@ use criterion::{criterion_main, Criterion};
 use tokio::sync::mpsc;
 
 fn mpsc_or_queues(criterion: &mut Criterion) {
-    env_logger::builder().is_test(true).try_init().unwrap();
+    env_logger::builder()
+        .is_test(true)
+        .try_init()
+        .expect("init log");
     let mut group = criterion.benchmark_group("mpsc_or_spillway");
     group.throughput(criterion::Throughput::Elements(1));
     let threads = 16;
