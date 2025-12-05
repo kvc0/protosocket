@@ -10,8 +10,6 @@ use std::{
 
 use futures::{task::AtomicWaker, Stream};
 
-impl<F> Unpin for IdentifiableAbortable<F> {}
-
 #[derive(Debug)]
 pub struct IdentifiableAbortable<F> {
     f: F,
@@ -110,16 +108,8 @@ pub struct IdentifiableAbortHandle {
     waker: Arc<AtomicWaker>,
 }
 impl IdentifiableAbortHandle {
-    /// Send an abort to the future or stream.
-    pub fn abort(&self) {
-        let _ = self
-            .aborted
-            .compare_exchange(0, 1, Ordering::Release, Ordering::Relaxed);
-        self.waker.wake();
-    }
-
     /// Mark the future or stream as externally cancelled - don't send a cancellation
-    pub fn mark_aborted(&self) {
+    pub fn mark_aborted(self) {
         self.aborted.store(2, Ordering::Relaxed);
         self.waker.wake();
     }
