@@ -41,12 +41,12 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     let concurrency = 256;
-    let connections = 8;
+    let connections = 2;
 
     let concurrent_count = Arc::new(AtomicUsize::new(0));
     let request_ids = Arc::new(AtomicU64::new(1));
     let mut configuration = Configuration::new(TcpStreamConnector);
-    configuration.max_queued_outbound_messages(32);
+    configuration.max_queued_outbound_messages(64);
     for _i in 0..connections {
         let (client, connection) = protosocket_rpc::client::connect::<
             PooledEncoder<ProstSerializer<Request>>,
