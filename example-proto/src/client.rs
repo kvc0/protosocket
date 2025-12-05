@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 I.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             )
         })
-        .worker_threads(2)
+        .worker_threads(4)
         .event_interval(7)
         .enable_all()
         .build()?;
@@ -41,7 +41,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     let concurrency = 256;
-    let connections = 2;
+    let connections = 4;
 
     let concurrent_count = Arc::new(AtomicUsize::new(0));
     let request_ids = Arc::new(AtomicU64::new(1));
