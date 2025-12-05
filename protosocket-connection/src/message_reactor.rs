@@ -1,8 +1,3 @@
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-
 /// A message reactor is a stateful object that processes inbound messages.
 /// You receive &mut self, and you receive your messages by value.
 ///
