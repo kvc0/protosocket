@@ -27,63 +27,122 @@ impl<T> Receiver<T> {
     }
 
     pub fn poll_next(&mut self, context: &mut std::task::Context) -> std::task::Poll<Option<T>> {
-        let next = if self.buffer.is_empty() {
-            for _i in 0..self.shared.chutes.len() {
-                std::mem::swap(
-                    &mut *self.shared.chutes[self.cursor]
-                        .lock()
-                        .expect("must not be poisoned"),
-                    &mut self.buffer,
-                );
-                self.cursor = (self.cursor + 1) % self.shared.chutes.len();
-                if !self.buffer.is_empty() {
-                    break;
-                }
-            }
-            if self.buffer.is_empty() {
-                self.shared.waker.register(context.waker());
-                // gotta do a double-check or else waker can drop liveness events due to toctou
-                if self
-                    .shared
-                    .chutes
-                    .iter()
-                    .all(|chute| chute.lock().expect("must not be poisoned").is_empty())
-                {
-                    // All queues are empty
-                    if self
-                        .shared
-                        .senders
-                        .load(std::sync::atomic::Ordering::Acquire)
-                        == 0
-                    {
-                        // handle toctou for last items...
-                        for chute in self.shared.chutes.iter() {
-                            self.buffer
-                                .extend(chute.lock().expect("must not be poisoned").drain(..));
-                        }
-                        if self.buffer.is_empty() {
-                            return std::task::Poll::Ready(None);
-                        } else {
-                            // we'll come back around
-                            self.shared.wake();
+        match self.buffer.pop_front() {
+            Some(next) => std::task::Poll::Ready(Some(next)),
+            None => {
+                let dirty_index = match self.shared.race_find_dirty(self.cursor) {
+                    Some(dirty_index) => {
+                        log::debug!("found dirty {dirty_index}");
+                        dirty_index
+                    }
+                    None => {
+                        // we might park, but we gotta double check first after registering for wake
+                        self.shared.waker.register(context.waker());
+                        match self.shared.race_find_dirty(self.cursor) {
+                            Some(dirty_index) => {
+                                log::debug!("found dirty on double-check {dirty_index}");
+                                dirty_index
+                            }
+                            None => {
+                                // Well, wait - are we completely done now?
+                                if 0 == self
+                                    .shared
+                                    .senders
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                {
+                                    log::debug!("all done receiving and no more senders exist");
+                                    return std::task::Poll::Ready(None);
+                                }
+                                log::trace!("pending: {:#?}", self.shared);
+                                return std::task::Poll::Pending;
+                            }
                         }
                     }
-                } else {
-                    // There's some stuff in a channel, from racing
-                    self.shared.wake();
-                }
-                return std::task::Poll::Pending;
-            }
-            self.buffer.pop_front().expect("already checked")
-        } else {
-            self.buffer.pop_front().expect("already checked")
-        };
+                };
+                // cursor points at a dirty index.
+                debug_assert_eq!(0, self.buffer.len());
+                self.shared.chutes[dirty_index].swap(&mut self.buffer);
+                self.cursor = (dirty_index + 1) % self.shared.chutes.len();
+                log::debug!(
+                    "buffer: {}, cursor: {}, next: {:?}",
+                    self.buffer.len(),
+                    self.cursor,
+                    self.shared.race_find_dirty(self.cursor)
+                );
 
-        std::task::Poll::Ready(Some(next))
+                let next = self
+                    .buffer
+                    .pop_front()
+                    .expect("chutes are only dirty when they have contents");
+                std::task::Poll::Ready(Some(next))
+            }
+        }
     }
 
     #[inline]
     pub async fn next(&mut self) -> Option<T> {
         std::future::poll_fn(|context| self.poll_next(context)).await
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::task::{Context, Poll, Waker};
+
+    use crate::{channel_with_concurrency, Receiver};
+
+    fn poll(receiver: &mut Receiver<i32>) -> Poll<Option<i32>> {
+        receiver.poll_next(&mut Context::from_waker(Waker::noop()))
+    }
+
+    #[test]
+    fn test_channel() {
+        let (sender, mut receiver) = channel_with_concurrency(1);
+        assert_eq!(1, receiver.shared.chutes.len());
+        assert!(receiver.shared.chutes[0].clean());
+
+        assert_eq!(Poll::Pending, poll(&mut receiver));
+        assert_eq!(Poll::Pending, poll(&mut receiver));
+        sender.send(1).expect("sends");
+        assert!(!receiver.shared.chutes[0].clean());
+        assert_eq!(Poll::Ready(Some(1)), poll(&mut receiver));
+        assert!(receiver.shared.chutes[0].clean());
+    }
+
+    #[test]
+    fn test_channel_immediate() {
+        let (sender, mut receiver) = channel_with_concurrency(1);
+        sender.send(1).expect("sends");
+        assert_eq!(Poll::Ready(Some(1)), poll(&mut receiver));
+    }
+
+    #[test]
+    fn test_channel_two() {
+        let (sender, mut receiver) = channel_with_concurrency(2);
+        let sender2 = sender.clone();
+        sender.send(0).expect("sends");
+        sender.send(1).expect("sends");
+        sender2.send(2).expect("sends");
+        sender2.send(3).expect("sends");
+
+        assert!(!receiver.shared.chutes[0].clean());
+        assert!(!receiver.shared.chutes[1].clean());
+
+        assert_eq!(Poll::Ready(Some(0)), poll(&mut receiver));
+
+        assert!(receiver.shared.chutes[0].clean());
+        assert!(!receiver.shared.chutes[1].clean());
+
+        assert_eq!(Poll::Ready(Some(1)), poll(&mut receiver));
+
+        assert_eq!(Poll::Ready(Some(2)), poll(&mut receiver));
+        assert!(receiver.shared.chutes[0].clean());
+        assert!(receiver.shared.chutes[1].clean());
+        sender.send(4).expect("sends");
+        assert!(!receiver.shared.chutes[0].clean());
+
+        assert_eq!(Poll::Ready(Some(3)), poll(&mut receiver));
+        assert_eq!(Poll::Ready(Some(4)), poll(&mut receiver));
+        assert_eq!(Poll::Pending, poll(&mut receiver));
     }
 }
