@@ -40,17 +40,15 @@ impl<TSocketService>
         super::TokioSpawn<
             Connection<
                 <TSocketService::SocketListener as SocketListener>::Stream,
-                TSocketService::RequestDecoder,
-                TSocketService::ResponseEncoder,
+                TSocketService::Codec,
                 RpcSubmitter<TSocketService::ConnectionService>,
             >,
         >,
     >
 where
     TSocketService: SocketService,
-    TSocketService::RequestDecoder: Send,
-    TSocketService::ResponseEncoder: Send,
-    <TSocketService::ResponseEncoder as Encoder>::Serialized: Send,
+    TSocketService::Codec: Send,
+    <TSocketService::Codec as Encoder>::Serialized: Send,
     <TSocketService::SocketListener as SocketListener>::Stream: Send,
     TSocketService::ConnectionService: Send,
 {
@@ -83,8 +81,7 @@ where
     TSpawnConnection: Spawn<
         Connection<
             <TSocketService::SocketListener as SocketListener>::Stream,
-            TSocketService::RequestDecoder,
-            TSocketService::ResponseEncoder,
+            TSocketService::Codec,
             RpcSubmitter<TSocketService::ConnectionService>,
         >,
     >,
@@ -130,8 +127,7 @@ where
     TSpawnConnection: Spawn<
         Connection<
             <TSocketService::SocketListener as SocketListener>::Stream,
-            TSocketService::RequestDecoder,
-            TSocketService::ResponseEncoder,
+            TSocketService::Codec,
             RpcSubmitter<TSocketService::ConnectionService>,
         >,
     >,
@@ -149,13 +145,11 @@ where
                         #[allow(clippy::type_complexity)]
                         let connection: Connection<
                             <TSocketService::SocketListener as SocketListener>::Stream,
-                            TSocketService::RequestDecoder,
-                            TSocketService::ResponseEncoder,
+                            TSocketService::Codec,
                             RpcSubmitter<TSocketService::ConnectionService>,
                         > = Connection::new(
                             stream,
-                            self.socket_server.decoder(),
-                            self.socket_server.encoder(),
+                            self.socket_server.codec(),
                             self.max_buffer_length,
                             self.buffer_allocation_increment,
                             self.max_queued_outbound_messages,

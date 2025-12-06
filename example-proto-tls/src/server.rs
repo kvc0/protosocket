@@ -89,19 +89,15 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService {}
 impl SocketService for DemoRpcSocketService {
-    type RequestDecoder = ProstDecoder<Request>;
-    // Use a pooled encoder to amortize memory allocation cost.
-    // Each connection gets its own little memory pool.
-    type ResponseEncoder = PooledEncoder<ProstSerializer<Response>>;
+    type Codec = (
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
+    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TlsSocketListener;
 
-    fn decoder(&self) -> Self::RequestDecoder {
-        Self::RequestDecoder::default()
-    }
-
-    fn encoder(&self) -> Self::ResponseEncoder {
-        Self::ResponseEncoder::default()
+    fn codec(&self) -> Self::Codec {
+        Default::default()
     }
 
     fn new_stream_service(

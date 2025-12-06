@@ -434,6 +434,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-pool"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "env_logger",
+ "futures",
+ "log",
+ "protosocket",
+ "protosocket-server",
+ "spillway",
+ "tokio",
+]
+
+[[package]]
 name = "example-proto"
 version = "0.1.0"
 dependencies = [

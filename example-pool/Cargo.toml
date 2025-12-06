@@ -1,0 +1,20 @@
+[package]
+name = "example-pool"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "example-pool-server"
+path = "src/server.rs"
+
+[dependencies]
+protosocket             = { workspace = true }
+protosocket-server      = { workspace = true }
+spillway                = { workspace = true }
+
+bytes                   = { workspace = true }
+env_logger              = { workspace = true }
+futures                 = { workspace = true }
+log                     = { workspace = true }
+tokio                   = { workspace = true, features = ["full"] }

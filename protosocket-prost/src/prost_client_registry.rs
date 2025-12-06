@@ -86,15 +86,13 @@ where
             .await
             .map_err(std::sync::Arc::new)?;
         let (outbound, outbound_messages) = spillway::channel();
-        let connection = Connection::<
-            TConnector::Stream,
-            ProstDecoder<Response>,
-            PooledEncoder<ProstSerializer<Request>>,
-            Reactor,
-        >::new(
+        let codec = (
+            PooledEncoder::<ProstSerializer<Request>>::default(),
+            ProstDecoder::<Response>::default(),
+        );
+        let connection = Connection::new(
             stream,
-            Default::default(),
-            Default::default(),
+            codec,
             self.max_buffer_length,
             self.buffer_allocation_increment,
             self.max_queued_outbound_messages,

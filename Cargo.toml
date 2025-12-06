@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "benchmarks",
     "example-messagepack",
+    "example-pool",
     "example-proto",
     "example-proto-tls",
     "example-telnet",

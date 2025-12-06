@@ -12,8 +12,7 @@ fn main() {
     let (message_sender, outbound_messages) = spillway::channel();
     Connection::new(
         stream,
-        BulkDecoder::default(),
-        BulkEncoder,
+        (BulkEncoder, BulkDecoder::default()),
         64,
         64,
         8,
@@ -29,6 +28,12 @@ struct EchoReactor {
 }
 impl MessageReactor for EchoReactor {
     type Inbound = Bytes;
+    type Outbound = Bytes;
+    type LogicalOutbound = Bytes;
+
+    fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound {
+        message
+    }
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> protosocket::ReactorStatus {
         match self.outbound_messages.send(message) {

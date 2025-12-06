@@ -221,30 +221,31 @@ where
 }
 
 /// Connect a new protosocket rpc client to a server
-pub async fn connect<Serializer, Deserializer, TStreamConnector>(
+pub async fn connect<Codec, TStreamConnector>(
     address: SocketAddr,
     configuration: &Configuration<TStreamConnector>,
 ) -> Result<
     (
-        RpcClient<Serializer::Message, Deserializer::Message>,
+        RpcClient<
+            <Codec as protosocket::Encoder>::Message,
+            <Codec as protosocket::Decoder>::Message,
+        >,
         protosocket::Connection<
             TStreamConnector::Stream,
-            Deserializer,
-            Serializer,
+            Codec,
             RpcCompletionReactor<
-                Deserializer::Message,
-                Serializer::Message,
-                DoNothingMessageHandler<Deserializer::Message>,
+                <Codec as protosocket::Decoder>::Message,
+                <Codec as protosocket::Encoder>::Message,
+                DoNothingMessageHandler<<Codec as protosocket::Decoder>::Message>,
             >,
         >,
     ),
     crate::Error,
 >
 where
-    Deserializer: protosocket::Decoder + Default + 'static,
-    Serializer: protosocket::Encoder + Default + 'static,
-    Deserializer::Message: Message,
-    Serializer::Message: Message,
+    Codec: protosocket::Codec + Default + 'static,
+    <Codec as protosocket::Decoder>::Message: Message,
+    <Codec as protosocket::Encoder>::Message: Message,
     TStreamConnector: StreamConnector,
 {
     log::trace!("new client {address}, {configuration:?}");
@@ -264,9 +265,9 @@ where
     socket.set_reuse_address(true)?;
 
     let message_reactor: RpcCompletionReactor<
-        Deserializer::Message,
-        Serializer::Message,
-        DoNothingMessageHandler<Deserializer::Message>,
+        <Codec as protosocket::Decoder>::Message,
+        <Codec as protosocket::Encoder>::Message,
+        DoNothingMessageHandler<<Codec as protosocket::Decoder>::Message>,
     > = RpcCompletionReactor::new(Default::default());
     let (outbound, outbound_messages) = spillway::channel();
     let rpc_client = RpcClient::new(outbound, &message_reactor);
@@ -278,17 +279,15 @@ where
     // Tie outbound_messages to message_reactor via a protosocket::Connection
     let connection = Connection::<
         TStreamConnector::Stream,
-        Deserializer,
-        Serializer,
+        Codec,
         RpcCompletionReactor<
-            Deserializer::Message,
-            Serializer::Message,
-            DoNothingMessageHandler<Deserializer::Message>,
+            <Codec as protosocket::Decoder>::Message,
+            <Codec as protosocket::Encoder>::Message,
+            DoNothingMessageHandler<<Codec as protosocket::Decoder>::Message>,
         >,
     >::new(
         stream,
-        Deserializer::default(),
-        Serializer::default(),
+        Codec::default(),
         configuration.max_buffer_length,
         configuration.buffer_allocation_increment,
         configuration.max_queued_outbound_messages,

@@ -14,6 +14,7 @@ pub mod pooled_encoder;
 mod socket_listener;
 
 pub use connection::Connection;
+pub use encoding::Codec;
 pub use encoding::Decoder;
 pub use encoding::Encoder;
 pub use encoding::OwnedBuffer;
