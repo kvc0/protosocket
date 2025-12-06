@@ -1,9 +1,4 @@
-use std::{
-    collections::VecDeque,
-    io::Read,
-    sync::{atomic::AtomicUsize, Arc},
-    time::Duration,
-};
+use std::{collections::VecDeque, time::Duration};
 
 use protosocket::{
     Codec, Decoder, DeserializeError, Encoder, MessageReactor, ReactorStatus, SocketListener,
@@ -26,17 +21,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[derive(Default, Clone)]
-struct ServerContext {
-    _connections: Arc<AtomicUsize>,
-}
+struct ServerContext {}
 
 impl ServerConnector for ServerContext {
     type SocketListener = TcpSocketListener;
-    type Codec = StringCodec;
-    type Reactor = StringReactor;
+    type Codec = ByteBufferRingCodec;
+    type Reactor = PooledReactor;
 
     fn codec(&self) -> Self::Codec {
-        StringCodec
+        ByteBufferRingCodec::default()
     }
 
     fn new_reactor(
@@ -44,7 +37,7 @@ impl ServerConnector for ServerContext {
         optional_outbound: spillway::Sender<<Self::Codec as Encoder>::Message>,
         _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {
-        StringReactor {
+        PooledReactor {
             outbound: optional_outbound,
         }
     }
@@ -61,10 +54,10 @@ impl ServerConnector for ServerContext {
     }
 }
 
-struct StringReactor {
+struct PooledReactor {
     outbound: spillway::Sender<String>,
 }
-impl MessageReactor for StringReactor {
+impl MessageReactor for PooledReactor {
     type Inbound = String;
     type Outbound = String;
     type LogicalOutbound = String;
@@ -92,44 +85,62 @@ impl MessageReactor for StringReactor {
     }
 }
 
-struct StringCodec;
+#[derive(Default)]
+struct ByteBufferRingCodec {
+    /// Reused buffers, so there's no steady state allocation for RPC messages
+    buffer_pool: Vec<Vec<u8>>,
+}
 
-impl Codec for StringCodec {}
-impl Encoder for StringCodec {
+impl Codec for ByteBufferRingCodec {}
+impl Encoder for ByteBufferRingCodec {
     type Message = String;
     type Serialized = VecDeque<u8>;
 
-    fn encode(&mut self, mut response: Self::Message) -> Self::Serialized {
-        response.push_str(" ENCODED\n");
+    fn encode(&mut self, response: Self::Message) -> Self::Serialized {
+        // This response payload is from an earlier decode(), which comes from
+        // self.buffer_pool.
+        //
+        // In a real application, you might need to make Self::Message a little more
+        // interesting to both avoid allocation and carry a logical response.
+        // For example, you might want a Message struct that carries the decoded buffer
+        // along, so you can reuse it or return it to the pool here.
+        //
+        // convert String -> Vec<u8> is O(1), and Vec<u8> -> VecDeque<u8> is O(1).
+        // buffer is carried through.
         response.into_bytes().into()
     }
+
+    fn return_buffer(&mut self, mut buffer: Self::Serialized) {
+        if 31 < self.buffer_pool.len() {
+            // Limit the pooled buffer count (do what you want here)
+            return;
+        }
+        // clear retains capacity
+        buffer.clear();
+        // Vec::Dequeue -> Vec conversion takes the inner buffer without copy when
+        // the head is at 0 and length is at 0, which clear() provides.
+        self.buffer_pool.push(buffer.into());
+    }
 }
-impl Decoder for StringCodec {
+
+impl Decoder for ByteBufferRingCodec {
     type Message = String;
 
     fn decode(
         &mut self,
-        buffer: impl bytes::Buf,
+        mut buffer: impl bytes::Buf,
     ) -> std::result::Result<(usize, Self::Message), DeserializeError> {
-        let mut read_buffer: [u8; 1] = [0; 1];
-        let read = buffer
-            .reader()
-            .read(&mut read_buffer)
-            .map_err(|_e| DeserializeError::InvalidBuffer)?;
-        match String::from_utf8(read_buffer.to_vec()) {
-            Ok(s) => {
-                let mut s = s.trim().to_string();
-                if s.is_empty() {
-                    Err(DeserializeError::SkipMessage { distance: read })
-                } else {
-                    s.push_str(" DECODED");
-                    Ok((read, s))
-                }
-            }
-            Err(e) => {
-                log::debug!("invalid message {e:?}");
-                Err(DeserializeError::InvalidBuffer)
-            }
-        }
+        // default() is how we get another buffer.
+        let mut read_buffer = self.buffer_pool.pop().unwrap_or_default();
+        let remaining = buffer.remaining();
+        read_buffer.resize(remaining, 0);
+        buffer.copy_to_slice(&mut read_buffer);
+
+        let read_buffer = String::from_utf8(read_buffer).map_err(|e| {
+            log::error!("Invalid UTF-8 buffer: {e:?}");
+            DeserializeError::InvalidBuffer
+        })?;
+
+        Ok((remaining, read_buffer))
     }
 }

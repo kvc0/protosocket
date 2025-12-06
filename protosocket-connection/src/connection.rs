@@ -10,6 +10,7 @@ use bytes::Buf;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{
+    encoding::Codec,
     interrupted,
     message_reactor::{MessageReactor, ReactorStatus},
     would_block, Decoder, DeserializeError, Encoder,
@@ -28,33 +29,32 @@ use crate::{
 /// callback `on_messages`, which will let you reply as soon as possible.
 pub struct Connection<
     // Bidirectional Stream type to use for this connection. Like `tokio::net::TcpStream`.
-    TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-    // The deserializer for this connection.
-    TDecoder: Decoder,
-    // The serializer for this connection.
-    TEncoder: Encoder,
+    TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
+    // The wire / message codec for this connection.
+    TCodec: Codec,
     // The message reactor for this connection.
-    TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
+    TReactor: MessageReactor<Inbound = <TCodec as Decoder>::Message, Outbound = <TCodec as Encoder>::Message>,
 > {
     stream: TStream,
     outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
-    send_buffer: VecDeque<<TEncoder as Encoder>::Serialized>,
+    send_buffer: VecDeque<<TCodec as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
     max_buffer_length: usize,
     max_queued_send_messages: usize,
     buffer_allocation_increment: usize,
-    decoder: TDecoder,
-    encoder: TEncoder,
+    codec: TCodec,
     reactor: TReactor,
 }
 
 impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TDecoder: Decoder,
-        TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
-    > std::fmt::Display for Connection<TStream, TDecoder, TEncoder, TReactor>
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
+        TCodec: Codec,
+        TReactor: MessageReactor<
+            Inbound = <TCodec as Decoder>::Message,
+            Outbound = <TCodec as Encoder>::Message,
+        >,
+    > std::fmt::Display for Connection<TStream, TCodec, TReactor>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let read_end = self.receive_buffer_unread_index;
@@ -66,20 +66,24 @@ impl<
 }
 
 impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TDecoder: Decoder,
-        TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
-    > Unpin for Connection<TStream, TDecoder, TEncoder, TReactor>
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
+        TCodec: Codec,
+        TReactor: MessageReactor<
+            Inbound = <TCodec as Decoder>::Message,
+            Outbound = <TCodec as Encoder>::Message,
+        >,
+    > Unpin for Connection<TStream, TCodec, TReactor>
 {
 }
 
 impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TDecoder: Decoder,
-        TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
-    > Future for Connection<TStream, TDecoder, TEncoder, TReactor>
+        TCodec: Codec,
+        TReactor: MessageReactor<
+            Inbound = <TCodec as Decoder>::Message,
+            Outbound = <TCodec as Encoder>::Message,
+        >,
+    > Future for Connection<TStream, TCodec, TReactor>
 {
     type Output = ();
 
@@ -122,11 +126,13 @@ impl<
 }
 
 impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TDecoder: Decoder,
-        TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
-    > Drop for Connection<TStream, TDecoder, TEncoder, TReactor>
+        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
+        TCodec: Codec,
+        TReactor: MessageReactor<
+            Inbound = <TCodec as Decoder>::Message,
+            Outbound = <TCodec as Encoder>::Message,
+        >,
+    > Drop for Connection<TStream, TCodec, TReactor>
 {
     fn drop(&mut self) {
         log::debug!("connection dropped")
@@ -147,10 +153,12 @@ enum ReadBufferState {
 
 impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TDecoder: Decoder,
-        TEncoder: Encoder,
-        TReactor: MessageReactor<Inbound = TDecoder::Message, Outbound = TEncoder::Message>,
-    > Connection<TStream, TDecoder, TEncoder, TReactor>
+        TCodec: Codec,
+        TReactor: MessageReactor<
+            Inbound = <TCodec as Decoder>::Message,
+            Outbound = <TCodec as Encoder>::Message,
+        >,
+    > Connection<TStream, TCodec, TReactor>
 {
     /// Create a new protosocket Connection with the given stream and reactor.
     ///
@@ -158,8 +166,7 @@ impl<
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn new(
         stream: TStream,
-        decoder: TDecoder,
-        encoder: TEncoder,
+        codec: TCodec,
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
@@ -176,8 +183,7 @@ impl<
             max_queued_send_messages,
             receive_buffer_unread_index: 0,
             buffer_allocation_increment,
-            decoder,
-            encoder,
+            codec,
             reactor,
         }
     }
@@ -220,7 +226,7 @@ impl<
 
             let buffer = &self.receive_buffer[buffer_cursor..self.receive_buffer_unread_index];
             log::trace!("decode {buffer:?}");
-            match self.decoder.decode(buffer) {
+            match self.codec.decode(buffer) {
                 Ok((length, message)) => {
                     buffer_cursor += length;
                     if self.reactor.on_inbound_message(message) == ReactorStatus::Disconnect {
@@ -328,7 +334,7 @@ impl<
                 Poll::Ready(Some(next)) => next,
             };
             let message = self.reactor.on_outbound_message(message);
-            let buffer = self.encoder.encode(message);
+            let buffer = self.codec.encode(message);
             log::trace!(
                 "serialized message and enqueueing outbound buffer: {}b",
                 buffer.remaining()
@@ -428,7 +434,7 @@ impl<
                 if remaining <= written {
                     written -= remaining;
                     log::trace!("returning consumed buffer after sending final {remaining}b");
-                    self.encoder.return_buffer(front);
+                    self.codec.return_buffer(front);
                 } else {
                     // Walk the buffer forward. It needs to be the next bytes on the wire, so we'll put it back in front.
                     // Partial buffer consumption is relatively uncommon, but it definitely happens.

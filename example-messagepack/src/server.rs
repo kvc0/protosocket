@@ -2,7 +2,7 @@ use std::sync::atomic::AtomicUsize;
 
 use futures::Stream;
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
-use protosocket::{StreamWithAddress, TcpSocketListener};
+use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_rpc::{
     server::{ConnectionService, RpcResponder, SocketService},
     Message, ProtosocketControlCode,
@@ -56,17 +56,17 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type RequestDecoder = protosocket_messagepack::ProtosocketMessagePackDecoder<Request>;
-    type ResponseEncoder = protosocket_messagepack::MessagePackSerializer<Response>;
+    type Codec = (
+        // Use a pooled encoder to amortize memory allocation cost.
+        // Each connection gets its own little memory pool.
+        PooledEncoder<protosocket_messagepack::MessagePackSerializer<Response>>,
+        protosocket_messagepack::ProtosocketMessagePackDecoder<Request>,
+    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;
 
-    fn decoder(&self) -> Self::RequestDecoder {
-        Self::RequestDecoder::default()
-    }
-
-    fn encoder(&self) -> Self::ResponseEncoder {
-        Self::ResponseEncoder::default()
+    fn codec(&self) -> Self::Codec {
+        Default::default()
     }
 
     fn new_stream_service(&self, stream: &StreamWithAddress<TcpStream>) -> Self::ConnectionService {

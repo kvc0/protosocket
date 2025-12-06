@@ -48,8 +48,10 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     configuration.max_queued_outbound_messages(32);
     for _i in 0..8 {
         let (client, connection) = protosocket_rpc::client::connect::<
-            PooledEncoder<ProstSerializer<Request>>,
-            ProstDecoder<Response>,
+            (
+                PooledEncoder<ProstSerializer<Request>>,
+                ProstDecoder<Response>,
+            ),
             _,
         >(
             std::env::var("ENDPOINT")

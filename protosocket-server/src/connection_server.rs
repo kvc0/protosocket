@@ -1,3 +1,4 @@
+use protosocket::Codec;
 use protosocket::Connection;
 use protosocket::Decoder;
 use protosocket::Encoder;
@@ -14,19 +15,17 @@ use std::task::Poll;
 
 /// The ServerConnector listens to a socket and spawns a Reactor for each new connection.
 pub trait ServerConnector: Unpin {
-    /// Inbound message type
-    type RequestDecoder: Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>;
-    /// Outbound message type
-    type ResponseEncoder: Encoder<Message = <Self::Reactor as MessageReactor>::Outbound>;
+    /// Message encoding
+    type Codec: Codec
+        + Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>
+        + Encoder<Message = <Self::Reactor as MessageReactor>::Outbound>;
     /// Per-connection message handler
     type Reactor: MessageReactor;
     /// The listener type for this service. E.g., `TcpSocketListener`
     type SocketListener: SocketListener;
 
-    /// Create a new encoder
-    fn encoder(&self) -> Self::ResponseEncoder;
-    /// Create a new decoder
-    fn decoder(&self) -> Self::RequestDecoder;
+    /// Create a new message codec for a connection
+    fn codec(&self) -> Self::Codec;
 
     /// Create a per-connection message Reactor.
     /// You can look at the connection in here if you need some data, like a SocketAddr
@@ -41,8 +40,7 @@ pub trait ServerConnector: Unpin {
         &self,
         connection: Connection<
             <Self::SocketListener as SocketListener>::Stream,
-            Self::RequestDecoder,
-            Self::ResponseEncoder,
+            Self::Codec,
             Self::Reactor,
         >,
     );
@@ -210,8 +208,7 @@ impl<Connector: ServerConnector> Future for ProtosocketServer<Connector> {
                             .new_reactor(outbound_submission_queue.clone(), &stream);
                         let connection = Connection::new(
                             stream,
-                            self.connector.decoder(),
-                            self.connector.encoder(),
+                            self.connector.codec(),
                             self.max_buffer_length,
                             self.buffer_allocation_increment,
                             self.max_queued_outbound_messages,
