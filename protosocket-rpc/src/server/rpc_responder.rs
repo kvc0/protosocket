@@ -1,9 +1,9 @@
-use std::{future::Future, pin::pin};
+use std::future::Future;
 
 use crate::{
     server::{
         abortable::IdentifiableAbortable, abortion_tracker::AbortionTracker,
-        forward::ForwardAbortableUnaryRpc,
+        forward_streaming::ForwardAbortableStreamingRpc, forward_unary::ForwardAbortableUnaryRpc,
     },
     Message,
 };
@@ -40,16 +40,9 @@ where
         self,
         streaming_rpc: impl futures::Stream<Item = Response>,
     ) -> impl Future<Output = ()> {
-        let outbound = self.outbound.clone();
-        async move {
-            let mut streaming_rpc = pin!(streaming_rpc);
-            while let Some(next) = futures::StreamExt::next(&mut streaming_rpc).await {
-                if outbound.send(next).is_err() {
-                    log::debug!("outbound channel closed during streaming response");
-                    break;
-                }
-            }
-        }
+        let (abortable_stream, abort) = IdentifiableAbortable::new(streaming_rpc);
+        self.aborts.register(self.message_id, abort);
+        ForwardAbortableStreamingRpc::new(abortable_stream, self.message_id, self.outbound.clone())
     }
 
     pub fn immediate(self, response: Response) {

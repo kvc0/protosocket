@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use futures::StreamExt;
 use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavior};
 use protosocket::PooledEncoder;
 use protosocket_prost::{ProstDecoder, ProstSerializer};
@@ -141,7 +142,7 @@ async fn generate_traffic(
     log::debug!("running traffic generator");
     loop {
         let i = request_ids.fetch_add(1, Ordering::Relaxed);
-        match client.send_unary(Request {
+        match client.send_streaming(Request {
             request_id: i,
             code: ProtosocketControlCode::Normal as u32,
             body: Some(EchoRequest {
@@ -151,17 +152,16 @@ async fn generate_traffic(
                     .expect("time works")
                     .as_nanos() as u64,
             }),
-            response_behavior: ResponseBehavior::Unary as i32,
+            response_behavior: ResponseBehavior::Stream as i32,
         }) {
-            Ok(completion) => {
-                concurrent_count.fetch_add(1, Ordering::Relaxed);
-                let metrics_count = metrics_count.clone();
-                let metrics_latency = metrics_latency.clone();
-                let concurrent_count: Arc<AtomicUsize> = concurrent_count.clone();
-
-                let response = completion.await.expect("response must be successful");
-                handle_response(response, metrics_count, metrics_latency);
-                concurrent_count.fetch_sub(1, Ordering::Relaxed);
+            Ok(mut completion) => {
+                while let Some(Ok(response)) = completion.next().await {
+                    handle_stream_response(
+                        response,
+                        &metrics_count,
+                        &metrics_latency,
+                    );
+                }
             }
             Err(e) => {
                 log::error!("send should work: {e:?}");
@@ -171,28 +171,29 @@ async fn generate_traffic(
     }
 }
 
-fn handle_response(
+fn handle_stream_response(
     response: Response,
-    metrics_count: Arc<AtomicUsize>,
-    metrics_latency: Arc<histogram::AtomicHistogram>,
+    metrics_count: &AtomicUsize,
+    metrics_latency: &histogram::AtomicHistogram,
 ) {
+    log::debug!("received stream response {response:?}");
     metrics_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let request_id = response.request_id;
     assert_ne!(response.request_id, 0, "received bad message");
     match response.kind {
-        Some(EchoResponseKind::Echo(echo)) => {
-            assert_eq!(request_id, echo.message.parse().unwrap_or_default());
+        Some(EchoResponseKind::Echo(_echo)) => {
+            log::error!("got a unary response for a stream request");
+        }
+        Some(EchoResponseKind::Stream(char_response)) => {
+            log::debug!("{char_response:?}");
 
             let latency = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time works")
                 .as_nanos() as u64
-                - echo.nanotime;
+                - char_response.nanotime;
             let _ = metrics_latency.increment(latency);
-        }
-        Some(EchoResponseKind::Stream(_char_response)) => {
-            log::error!("got a stream response for a unary request");
         }
         None => {
             log::warn!("no response body");

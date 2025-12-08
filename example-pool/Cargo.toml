@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [[bin]]
-name = "example-pool-server"
+name = "server-pool"
 path = "src/server.rs"
 
 [dependencies]
