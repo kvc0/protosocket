@@ -51,7 +51,7 @@ impl LevelWorker {
         }
     }
 
-    pub(crate) fn run(&self) {
+    pub(crate) fn run(&self, termination: impl Future<Output = ()>) {
         LOCAL_RUNTIME.with(|none| {
             assert!(none.borrow().is_none(), "you can't run twice!");
             none.replace(Some(self.handle()));
@@ -60,7 +60,8 @@ impl LevelWorker {
             LOCAL_RUNTIME.try_with(|a| { a.borrow().is_some() }),
             Ok(true)
         );
-        self.runtime.block_on(std::future::pending())
+        self.runtime.block_on(termination);
+        log::debug!("runtime ended");
     }
 
     /// A spawn handle for the local runtime
