@@ -1,6 +1,7 @@
 mod abortable;
 mod abortion_tracker;
-mod forward;
+mod forward_streaming;
+mod forward_unary;
 mod rpc_responder;
 mod rpc_submitter;
 mod server_traits;

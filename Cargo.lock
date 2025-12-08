@@ -472,6 +472,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-proto-stream"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "env_logger",
+ "futures",
+ "histogram",
+ "level-runtime",
+ "log",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "prost",
+ "protosocket",
+ "protosocket-prost",
+ "protosocket-rpc",
+ "protosocket-server",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "example-proto-tls"
 version = "0.1.0"
 dependencies = [

@@ -1,19 +1,20 @@
 [package]
-name = "example-proto-tls"
+name = "example-proto-stream"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "server-stream-tls"
+name = "server-stream-proto"
 path = "src/server.rs"
 
 [[bin]]
-name = "client-stream-tls"
+name = "client-stream-proto"
 path = "src/client.rs"
 
 [dependencies]
-protosocket             = { workspace = true }
+level-runtime           = { workspace = true }
+protosocket             = { workspace = true }#, features = ["tracing"]}
 protosocket-prost       = { workspace = true }
 protosocket-rpc         = { workspace = true }
 protosocket-server      = { workspace = true }
@@ -23,10 +24,12 @@ env_logger              = { workspace = true }
 futures                 = { workspace = true }
 log                     = { workspace = true }
 prost                   = { workspace = true }
-rcgen                   = { workspace = true }
-rustls-pemfile          = { workspace = true }
-rustls-pki-types        = { workspace = true }
 tokio                   = { workspace = true, features = ["full"] }
-tokio-rustls            = { workspace = true }
+tracing                 = { workspace = true }
 
 histogram               = { version = "0.11" }
+opentelemetry           = { version = "0.31" }
+opentelemetry_sdk       = { version = "0.31" }
+opentelemetry-otlp      = { version = "0.31", features = ["grpc-tonic"] }
+tracing-opentelemetry   = { version = "0.32", default-features = false }
+tracing-subscriber      = { version = "0.3" }

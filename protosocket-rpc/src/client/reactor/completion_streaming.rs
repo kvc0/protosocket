@@ -62,7 +62,6 @@ where
             Poll::Ready(None) => {
                 self.closed = true;
                 self.completion_guard.set_closed();
-                log::error!("unexpected empty nexts");
                 Poll::Ready(Some(Err(crate::Error::Finished)))
             }
             Poll::Pending => Poll::Pending,

@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    pin::{pin, Pin},
+    pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -65,7 +65,7 @@ where
 
 impl<S> Stream for IdentifiableAbortable<S>
 where
-    S: Stream + Unpin,
+    S: Stream,
 {
     type Item = AbortableState<crate::Result<S::Item>>;
 
@@ -73,7 +73,9 @@ where
         self.waker.register(context.waker());
         match self.aborted.load(Ordering::Relaxed) {
             0 => {
-                match pin!(&mut self.f).poll_next(context) {
+                // SAFETY: This is a structural pin. If I'm not moved then neither is this stream.
+                match unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.f) }.poll_next(context)
+                {
                     Poll::Ready(next) => {
                         match next {
                             Some(next) => Poll::Ready(Some(AbortableState::Ready(Ok(next)))),

@@ -2,18 +2,19 @@ mod receiver;
 mod sender;
 mod shared;
 
-use std::{num::NonZero, sync::Arc};
+use std::sync::Arc;
 
 pub use receiver::Receiver;
 pub use sender::Sender;
 
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    channel_with_concurrency(
-        std::thread::available_parallelism()
-            .map(NonZero::get)
-            .unwrap_or(2)
-            .max(2),
-    )
+    // const PARALLELISM: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    //     std::thread::available_parallelism()
+    //         .map(std::num::NonZero::get)
+    //         .unwrap_or(2)
+    //         .max(2)
+    // });
+    channel_with_concurrency(8)
 }
 
 pub fn channel_with_concurrency<T>(concurrency: usize) -> (Sender<T>, Receiver<T>) {

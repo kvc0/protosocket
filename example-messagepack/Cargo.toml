@@ -5,11 +5,11 @@ edition = "2021"
 publish = false
 
 [[bin]]
-name = "example-messagepack-server"
+name = "server-messagepack"
 path = "src/server.rs"
 
 [[bin]]
-name = "example-messagepack-client"
+name = "client-messagepack"
 path = "src/client.rs"
 
 [dependencies]
