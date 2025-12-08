@@ -160,6 +160,19 @@ impl ProtosocketServerConfig {
             self,
         ))
     }
+
+    /// Build a socket server with a configured listener and a socket Connector.
+    /// After building, you must await the returned server future to process requests.
+    pub fn build_server<
+        Connector: ServerConnector<SocketListener = Listener>,
+        Listener: SocketListener,
+    >(
+        self,
+        listener: Listener,
+        connector: Connector,
+    ) -> crate::Result<ProtosocketServer<Connector>> {
+        Ok(ProtosocketServer::new(listener, connector, self))
+    }
 }
 
 impl Default for ProtosocketServerConfig {
