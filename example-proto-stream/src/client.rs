@@ -133,7 +133,7 @@ async fn print_periodic_metrics(
 }
 
 async fn generate_traffic(
-    concurrent_count: Arc<AtomicUsize>,
+    _concurrent_count: Arc<AtomicUsize>,
     request_ids: Arc<AtomicU64>,
     client: RpcClient<Request, Response>,
     metrics_count: Arc<AtomicUsize>,
@@ -156,11 +156,7 @@ async fn generate_traffic(
         }) {
             Ok(mut completion) => {
                 while let Some(Ok(response)) = completion.next().await {
-                    handle_stream_response(
-                        response,
-                        &metrics_count,
-                        &metrics_latency,
-                    );
+                    handle_stream_response(response, &metrics_count, &metrics_latency);
                 }
             }
             Err(e) => {
@@ -179,7 +175,6 @@ fn handle_stream_response(
     log::debug!("received stream response {response:?}");
     metrics_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let request_id = response.request_id;
     assert_ne!(response.request_id, 0, "received bad message");
     match response.kind {
         Some(EchoResponseKind::Echo(_echo)) => {

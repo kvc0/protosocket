@@ -72,7 +72,7 @@ where
         &self,
         request: Request,
     ) -> crate::Result<StreamingCompletion<Response, Request>> {
-        let (sender, completion) = spillway::channel();
+        let (sender, completion) = spillway::channel_with_concurrency(1);
         let completion_guard = self.send_message(Completion::RemoteStreaming(sender), request)?;
 
         let completion = StreamingCompletion::new(completion, completion_guard);
