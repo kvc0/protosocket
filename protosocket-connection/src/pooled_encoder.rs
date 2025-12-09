@@ -113,7 +113,7 @@ impl bytes::Buf for Reusable {
 
     #[inline(always)]
     fn advance(&mut self, cnt: usize) {
-        assert!(self.inner.len() <= self.cursor + cnt);
+        assert!(self.cursor + cnt <= self.inner.len());
         self.cursor += cnt;
     }
 
