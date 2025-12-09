@@ -56,7 +56,7 @@ where
     ///
     /// This assumes a Tokio runtime, and is only available when your `SocketService` is
     /// transitively `Send`.
-    pub async fn new(
+    pub fn new(
         listener: TSocketService::SocketListener,
         socket_server: TSocketService,
         max_buffer_length: usize,
@@ -71,7 +71,6 @@ where
             max_queued_outbound_messages,
             super::TokioSpawn::default(),
         )
-        .await
     }
 }
 
@@ -88,7 +87,7 @@ where
 {
     /// Construct a new `SocketRpcServer` with a listener and a spawner.
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_spawner(
+    pub fn new_with_spawner(
         listener: TSocketService::SocketListener,
         socket_server: TSocketService,
         max_buffer_length: usize,
