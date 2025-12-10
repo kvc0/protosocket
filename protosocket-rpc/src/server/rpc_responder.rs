@@ -4,13 +4,14 @@ use crate::{
     server::{
         abortable::IdentifiableAbortable, abortion_tracker::AbortionTracker,
         forward_streaming::ForwardAbortableStreamingRpc, forward_unary::ForwardAbortableUnaryRpc,
+        rpc_submitter::RpcResponse,
     },
     Message,
 };
 
 #[must_use]
 pub struct RpcResponder<'a, Response> {
-    outbound: &'a spillway::Sender<Response>,
+    outbound: &'a spillway::Sender<RpcResponse<Response>>,
     aborts: &'a mut AbortionTracker,
     message_id: u64,
 }
@@ -19,7 +20,7 @@ where
     Response: Message,
 {
     pub(crate) fn new_responder_reference(
-        outbound: &'a spillway::Sender<Response>,
+        outbound: &'a spillway::Sender<RpcResponse<Response>>,
         aborts: &'a mut AbortionTracker,
         message_id: u64,
     ) -> Self {
@@ -46,7 +47,11 @@ where
     }
 
     pub fn immediate(self, response: Response) {
-        if self.outbound.send(response).is_err() {
+        if self
+            .outbound
+            .send(RpcResponse::Untracked(response))
+            .is_err()
+        {
             log::debug!("outbound channel closed while sending response");
         }
     }
