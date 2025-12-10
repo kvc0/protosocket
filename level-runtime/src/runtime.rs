@@ -134,6 +134,12 @@ impl LevelRuntimeHandle {
         balance_workers(&self.workers).spawn_local(future)
     }
 
+    /// Get one consistent worker handle
+    #[track_caller]
+    pub fn pick_worker(&self) -> &LevelWorkerHandle {
+        balance_workers(&self.workers)
+    }
+
     /// Spawn a copy of this future on each runtime. Do this for server listeners
     /// using SO_REUSEADDR.
     #[track_caller]
