@@ -6,7 +6,10 @@ use std::{
 
 use futures::Stream;
 
-use crate::{server::abortable::AbortableState, Message};
+use crate::{
+    server::{abortable::AbortableState, rpc_submitter::RpcResponse},
+    Message,
+};
 
 pub struct ForwardAbortableStreamingRpc<S, T>
 where
@@ -15,7 +18,7 @@ where
 {
     stream: S,
     id: u64,
-    forward: spillway::Sender<T>,
+    forward: spillway::Sender<RpcResponse<T>>,
     completed_for_drop: bool,
 }
 impl<S, T> Drop for ForwardAbortableStreamingRpc<S, T>
@@ -26,7 +29,7 @@ where
     fn drop(&mut self) {
         if !self.completed_for_drop {
             log::debug!("dropping unary rpc before completion: {}", self.id);
-            let _ = self.forward.send(T::cancelled(self.id));
+            let _ = self.forward.send(RpcResponse::Final(T::cancelled(self.id)));
         }
     }
 }
@@ -35,7 +38,7 @@ where
     S: Stream<Item = AbortableState<crate::Result<T>>>,
     T: Message,
 {
-    pub fn new(stream: S, id: u64, forward: spillway::Sender<T>) -> Self {
+    pub fn new(stream: S, id: u64, forward: spillway::Sender<RpcResponse<T>>) -> Self {
         Self {
             stream,
             id,
@@ -68,7 +71,7 @@ where
                     match state {
                         Some(AbortableState::Ready(Ok(response))) => {
                             log::trace!("{} unary rpc response", self.id);
-                            if let Err(_e) = self.forward.send(response) {
+                            if let Err(_e) = self.forward.send(RpcResponse::Partial(response)) {
                                 log::debug!("outbound connection is closed");
                             }
                             continue;
@@ -80,19 +83,27 @@ where
                                         "{} io failure while servicing rpc: {error:?}",
                                         self.id
                                     );
-                                    let _ = self.forward.send(T::cancelled(self.id));
+                                    let _ = self
+                                        .forward
+                                        .send(RpcResponse::Final(T::cancelled(self.id)));
                                 }
                                 crate::Error::CancelledRemotely => {
                                     log::debug!("{} rpc cancelled remotely", self.id);
-                                    let _ = self.forward.send(T::cancelled(self.id));
+                                    let _ = self
+                                        .forward
+                                        .send(RpcResponse::Final(T::cancelled(self.id)));
                                 }
                                 crate::Error::ConnectionIsClosed => {
                                     log::debug!("{} rpc cancelled remotely", self.id);
-                                    let _ = self.forward.send(T::cancelled(self.id));
+                                    let _ = self
+                                        .forward
+                                        .send(RpcResponse::Final(T::cancelled(self.id)));
                                 }
                                 crate::Error::Finished => {
                                     log::debug!("{} unary rpc ended", self.id);
-                                    if let Err(_e) = self.forward.send(T::ended(self.id)) {
+                                    if let Err(_e) =
+                                        self.forward.send(RpcResponse::Final(T::ended(self.id)))
+                                    {
                                         log::debug!("outbound connection is closed");
                                     }
                                 }
@@ -103,19 +114,19 @@ where
                         Some(AbortableState::Abort) => {
                             // This happens when the upstream stuff is dropped and there are no messages that can be produced. We'll send a cancellation.
                             log::debug!("{} unary rpc abort", self.id);
-                            let _ = self.forward.send(T::cancelled(self.id));
+                            let _ = self.forward.send(RpcResponse::Final(T::cancelled(self.id)));
                             self.complete_for_drop();
                             Poll::Ready(())
                         }
                         Some(AbortableState::Aborted) => {
                             log::debug!("{} unary rpc was cancelled by the client.", self.id);
-                            let _ = self.forward.send(T::cancelled(self.id));
+                            let _ = self.forward.send(RpcResponse::Final(T::cancelled(self.id)));
                             self.complete_for_drop();
                             Poll::Ready(())
                         }
                         None => {
                             log::debug!("{} streaming rpc reached the end", self.id);
-                            let _ = self.forward.send(T::ended(self.id));
+                            let _ = self.forward.send(RpcResponse::Final(T::ended(self.id)));
                             self.complete_for_drop();
                             Poll::Ready(())
                         }

@@ -12,7 +12,7 @@ where
     TConnectionServer: ConnectionService,
 {
     connection_server: TConnectionServer,
-    outbound: spillway::Sender<<TConnectionServer as ConnectionService>::Response>,
+    outbound: spillway::Sender<RpcResponse<<TConnectionServer as ConnectionService>::Response>>,
     aborts: AbortionTracker,
 }
 impl<TConnectionService> RpcSubmitter<TConnectionService>
@@ -21,7 +21,7 @@ where
 {
     pub fn new(
         connection_server: TConnectionService,
-        outbound: spillway::Sender<TConnectionService::Response>,
+        outbound: spillway::Sender<RpcResponse<TConnectionService::Response>>,
     ) -> Self {
         Self {
             connection_server,
@@ -31,13 +31,19 @@ where
     }
 }
 
+pub enum RpcResponse<T> {
+    Partial(T),
+    Final(T),
+    Untracked(T),
+}
+
 impl<TConnectionService> MessageReactor for RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
 {
     type Inbound = TConnectionService::Request;
     type Outbound = TConnectionService::Response;
-    type LogicalOutbound = TConnectionService::Response;
+    type LogicalOutbound = RpcResponse<TConnectionService::Response>;
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> protosocket::ReactorStatus {
         let message_id = message.message_id();
@@ -67,8 +73,20 @@ where
         protosocket::ReactorStatus::Continue
     }
 
-    fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound {
-        message
+    fn on_outbound_message(&mut self, response: Self::LogicalOutbound) -> Self::Outbound {
+        match response {
+            RpcResponse::Partial(message) => message,
+            RpcResponse::Untracked(message) => message,
+            RpcResponse::Final(message) => {
+                if self.aborts.take_abort(message.message_id()).is_none() {
+                    log::debug!(
+                        "final response for untracked message {}",
+                        message.message_id()
+                    );
+                }
+                message
+            }
+        }
     }
 }
 
