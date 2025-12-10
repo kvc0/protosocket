@@ -56,6 +56,13 @@ pub struct LevelRuntime {
     workers: Vec<LevelWorker>,
     thread_name: std::sync::Arc<dyn Fn() -> String + Send + Sync + 'static>,
 }
+impl std::fmt::Debug for LevelRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelRuntime")
+            .field("workers", &self.workers)
+            .finish()
+    }
+}
 impl LevelRuntime {
     pub(crate) fn from_workers(
         thread_name: std::sync::Arc<dyn Fn() -> String + Send + Sync + 'static>,
