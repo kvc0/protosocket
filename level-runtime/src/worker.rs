@@ -84,6 +84,13 @@ pub struct LevelWorkerHandle {
     handle: tokio::runtime::Handle,
     concurrency: Arc<AtomicUsize>,
 }
+impl std::fmt::Debug for LevelWorkerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelWorkerHandle")
+            .field("concurrency", &self.concurrency)
+            .finish()
+    }
+}
 
 impl LevelWorkerHandle {
     /// Spawn the future on this thread's local runtime
