@@ -1,4 +1,7 @@
-use std::{future::Future, sync::OnceLock};
+use std::{
+    future::Future,
+    sync::{Arc, OnceLock},
+};
 
 use rand::Rng;
 use tokio::task::JoinHandle;
@@ -53,7 +56,7 @@ where
 ///
 /// It offers a load leveling heuristic, but not work stealing.
 pub struct LevelRuntime {
-    workers: Vec<LevelWorker>,
+    workers: Vec<Arc<LevelWorker>>,
     thread_name: std::sync::Arc<dyn Fn() -> String + Send + Sync + 'static>,
 }
 impl std::fmt::Debug for LevelRuntime {
@@ -69,7 +72,7 @@ impl LevelRuntime {
         workers: Vec<LevelWorker>,
     ) -> Self {
         Self {
-            workers,
+            workers: workers.into_iter().map(Arc::new).collect(),
             thread_name,
         }
     }
@@ -85,7 +88,7 @@ impl LevelRuntime {
     /// Get a spawn handle for the runtime.
     pub fn handle(&self) -> LevelRuntimeHandle {
         LevelRuntimeHandle {
-            workers: self.workers.iter().map(LevelWorker::handle).collect(),
+            workers: self.workers.iter().map(|w| w.handle()).collect(),
         }
     }
 
@@ -95,13 +98,15 @@ impl LevelRuntime {
     }
 
     /// Start this runtime in the background.
-    pub fn start(self) {
+    pub fn start(&self) {
         let _handles: Vec<_> = self
             .workers
-            .into_iter()
+            .iter()
             .map(|worker| {
+                let name = (self.thread_name)();
+                let worker = worker.clone();
                 std::thread::Builder::new()
-                    .name((self.thread_name)())
+                    .name(name)
                     .spawn(move || {
                         worker.run(std::future::pending());
                     })

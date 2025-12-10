@@ -56,7 +56,7 @@ impl LevelWorker {
         }
     }
 
-    pub(crate) fn run(&self, termination: impl Future<Output = ()>) {
+    pub(crate) fn run(self: Arc<Self>, termination: impl Future<Output = ()>) {
         LOCAL_RUNTIME.with(|none| {
             assert!(none.borrow().is_none(), "you can't run twice!");
             none.replace(Some(self.handle()));
