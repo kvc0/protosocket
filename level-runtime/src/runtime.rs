@@ -94,6 +94,22 @@ impl LevelRuntime {
         self.run_with_termination(std::future::pending());
     }
 
+    /// Start this runtime in the background.
+    pub fn start(self) {
+        let _handles: Vec<_> = self
+            .workers
+            .into_iter()
+            .map(|worker| {
+                std::thread::Builder::new()
+                    .name((self.thread_name)())
+                    .spawn(move || {
+                        worker.run(std::future::pending());
+                    })
+                    .expect("must be able to spawn level worker")
+            })
+            .collect();
+    }
+
     /// Execute this runtime. When `termination` completes, the backing executors will close.
     pub fn run_with_termination(self, termination: impl Future<Output = ()> + Send + 'static) {
         let termination = futures::FutureExt::shared(termination);
