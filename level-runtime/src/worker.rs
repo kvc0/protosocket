@@ -43,6 +43,11 @@ pub struct LevelWorker {
     runtime: tokio::runtime::Runtime,
     concurrency: Arc<AtomicUsize>,
 }
+impl std::fmt::Debug for LevelWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelWorker").finish()
+    }
+}
 impl LevelWorker {
     pub(crate) fn from_runtime(runtime: tokio::runtime::Runtime) -> Self {
         Self {
