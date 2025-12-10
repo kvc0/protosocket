@@ -104,6 +104,16 @@ impl LevelWorkerHandle {
             .spawn(ConcurrencyTracker::wrap(self.concurrency.clone(), future))
     }
 
+    /// Run the future on this thread's local runtime
+    #[track_caller]
+    pub fn block_on<F>(&self, future: F) -> F::Output
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.handle.block_on(future)
+    }
+
     /// How many tasks are currently spawned on this level worker?
     pub fn concurrency(&self) -> usize {
         self.concurrency.load(std::sync::atomic::Ordering::Relaxed)
