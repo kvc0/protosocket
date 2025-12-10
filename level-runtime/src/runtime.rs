@@ -117,7 +117,7 @@ impl LevelRuntime {
 }
 
 /// A handle to a LevelRuntime for spawning tasks.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LevelRuntimeHandle {
     workers: Vec<LevelWorkerHandle>,
 }
