@@ -108,8 +108,7 @@ impl LevelWorkerHandle {
     #[track_caller]
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: Future,
     {
         self.handle.block_on(future)
     }
