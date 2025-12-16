@@ -21,6 +21,18 @@ pub trait MessageReactor: 'static {
     /// Disconnect.
     fn on_inbound_message(&mut self, message: Self::Inbound) -> ReactorStatus;
 
+    /// Optional poll to allow the reactor to push work forward internally.
+    ///
+    /// You can use this to drive connection state machines (e.g., `FuturesUnordered`),
+    /// or whatever else you need to do with your reactor between reading from the network and
+    /// writing to it.
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::ops::ControlFlow<()> {
+        std::ops::ControlFlow::Continue(())
+    }
+
     /// Called from the connection's driver task when messages are sent.
     ///
     /// You can use this to track outbound messages, or to for logging or metrics.

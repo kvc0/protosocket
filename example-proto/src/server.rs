@@ -47,7 +47,6 @@ async fn run_main() -> Result<(), std::io::Error> {
             128,
             LevelSpawn::default(),
         )
-        .await
         .expect("must be able to listen");
         server.set_max_queued_outbound_messages(512);
         server.await

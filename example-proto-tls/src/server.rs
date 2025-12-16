@@ -76,8 +76,7 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
         4 << 20,
         1 << 20,
         128,
-    )
-    .await?;
+    )?;
     server.set_max_queued_outbound_messages(512);
 
     tokio::spawn(server).await??;

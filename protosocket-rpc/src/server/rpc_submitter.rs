@@ -88,6 +88,18 @@ where
             }
         }
     }
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::ops::ControlFlow<()> {
+        // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
+        let structurally_pinned_connection_server = unsafe {
+            self.as_mut()
+                .map_unchecked_mut(|me| &mut me.connection_server)
+        };
+        structurally_pinned_connection_server.poll(context)
+    }
 }
 
 impl<TConnectionService> RpcSubmitter<TConnectionService>

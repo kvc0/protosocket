@@ -1,10 +1,16 @@
-use futures::{future::join_all, Stream};
+use std::pin::pin;
+
+use futures::{
+    FutureExt, Stream,
+    future::{BoxFuture, join_all},
+    stream::FuturesUnordered,
+};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    server::{ConnectionService, LevelSpawn, RpcResponder, SocketService},
     Message, ProtosocketControlCode,
+    server::{ConnectionService, LevelSpawn, RpcResponder, SocketService},
 };
 use tokio::net::TcpStream;
 
@@ -47,7 +53,6 @@ async fn run_main() -> Result<(), std::io::Error> {
             128,
             LevelSpawn::default(),
         )
-        .await
         .expect("must be able to listen");
         server.set_max_queued_outbound_messages(512);
         server.await
@@ -82,6 +87,7 @@ impl SocketService for DemoRpcSocketService {
         log::info!("new connection server {}", stream.address());
         DemoRpcConnectionServer {
             address: stream.address(),
+            streams: FuturesUnordered::new(),
         }
     }
 }
@@ -90,6 +96,7 @@ impl SocketService for DemoRpcSocketService {
 /// get mutable access to the service on each new rpc for state tracking.
 struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
+    streams: FuturesUnordered<BoxFuture<'static, ()>>,
 }
 impl ConnectionService for DemoRpcConnectionServer {
     type Request = Request;
@@ -109,7 +116,8 @@ impl ConnectionService for DemoRpcConnectionServer {
                     responder.immediate(immediate_echo_response(request_id, echo))
                 }
                 ResponseBehavior::Stream => {
-                    tokio::spawn(responder.stream(echo_stream(request_id, echo)));
+                    self.streams
+                        .push(responder.stream(echo_stream(request_id, echo)).boxed());
                 }
             },
             None => {
@@ -117,6 +125,23 @@ impl ConnectionService for DemoRpcConnectionServer {
                 responder.immediate(Response::cancelled(request_id));
             }
         }
+    }
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::ops::ControlFlow<()> {
+        while !self.streams.is_empty()
+            && let std::task::Poll::Ready(next) = pin!(&mut self.streams).poll_next(context)
+        {
+            if next.is_none() {
+                log::error!(
+                    "the stream of futures should never return None. We don't poll it while empty"
+                );
+                return std::ops::ControlFlow::Break(());
+            }
+        }
+        std::ops::ControlFlow::Continue(())
     }
 }
 
