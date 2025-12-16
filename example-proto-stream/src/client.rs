@@ -1,7 +1,7 @@
 use std::{
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -11,8 +11,8 @@ use messages::{EchoRequest, EchoResponseKind, Request, Response, ResponseBehavio
 use protosocket::PooledEncoder;
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    client::{Configuration, RpcClient, TcpStreamConnector},
     ProtosocketControlCode,
+    client::{Configuration, RpcClient, TcpStreamConnector},
 };
 
 mod messages;
@@ -128,7 +128,9 @@ async fn print_periodic_metrics(
             .unwrap_or_default() as f64
             / 1000.0;
         let concurrent = concurrent_count.load(std::sync::atomic::Ordering::Relaxed);
-        eprintln!("Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}");
+        eprintln!(
+            "Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}"
+        );
     }
 }
 

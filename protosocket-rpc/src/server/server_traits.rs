@@ -62,4 +62,16 @@ pub trait ConnectionService: Unpin + 'static {
         initiating_message: Self::Request,
         responder: RpcResponder<'_, Self::Response>,
     );
+
+    /// Optional poll to allow the connection to push work forward internally.
+    ///
+    /// You can use this to drive connection state machines (e.g., `FuturesUnordered`),
+    /// or whatever else you need to do with your connection between reading from the network and
+    /// writing to it.
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::ops::ControlFlow<()> {
+        std::ops::ControlFlow::Continue(())
+    }
 }

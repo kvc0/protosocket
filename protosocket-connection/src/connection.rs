@@ -105,6 +105,14 @@ impl<
             return Poll::Ready(());
         }
 
+        // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
+        let structurally_pinned_reactor =
+            unsafe { self.as_mut().map_unchecked_mut(|me| &mut me.reactor) };
+        if structurally_pinned_reactor.poll(context).is_break() {
+            log::debug!("reactor requested disconnect");
+            return Poll::Ready(());
+        }
+
         // Step 4-5: Serialize and send outbound messages
         log::trace!("polling write");
         match self.poll_writev_buffers(context) {
