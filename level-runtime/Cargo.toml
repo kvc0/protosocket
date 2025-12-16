@@ -1,5 +1,6 @@
 [package]
 name = "level-runtime"
+description = "Conveniences for tokio thread-per-core runtime configuration"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
