@@ -170,7 +170,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "benchmarks"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -1030,7 +1030,7 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "level-runtime"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "futures",
  "log",
@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "bytes",
  "futures",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-messagepack"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "bytes",
  "log",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-prost"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "bytes",
  "log",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-rpc"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "ahash",
  "futures",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "protosocket-server"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "bytes",
  "futures",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "spillway"
-version = "1.0.0-pre.0"
+version = "1.0.0-pre.1"
 dependencies = [
  "futures",
  "log",
