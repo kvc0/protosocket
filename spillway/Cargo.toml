@@ -6,7 +6,6 @@ authors.workspace = true
 repository.workspace = true
 edition.workspace = true
 license.workspace = true
-readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
@@ -14,3 +13,6 @@ categories.workspace = true
 futures                 = { workspace = true }
 log                     = { workspace = true }
 rand                    = { workspace = true }
+
+[dev-dependencies]
+tokio-test              = { workspace = true }

@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use crate::shared::Shared;
 
+/// The sending half of a Spillway channel.
+///
+/// You `clone()` to create more Senders.
 pub struct Sender<T> {
     chute: usize,
     shared: Arc<Shared<T>>,
@@ -43,6 +46,16 @@ impl<T> Sender<T> {
         }
     }
 
+    /// Send a value to the Receiver.
+    ///
+    /// Messages are only guaranteed to arrive in order on a per-Sender basis.
+    ///
+    /// If you send 1, 2, 3 in this Sender, you will receive 1, 2, 3 in that order.
+    /// If you send 4, 5, 6 from another Sender, you will receive 4, 5, 6 in that order too.
+    ///
+    /// However, you might receive 1, 4, 5, 2, 3, 6 or any other interleaving. But
+    /// 1 will always appear before 2, and 2 before 3; and 4 will always appear before 5,
+    /// and 5 before 6.
     pub fn send(&self, value: T) -> Result<(), T> {
         self.shared.send(self.chute, value)
     }

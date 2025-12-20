@@ -2,6 +2,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use crate::shared::Shared;
 
+/// The receiving half of a Spillway channel.
 pub struct Receiver<T> {
     cursor: usize,
     buffer: VecDeque<T>,
@@ -26,6 +27,20 @@ impl<T> Receiver<T> {
         }
     }
 
+    /// This pattern does check whether the channel is closed. It's useful for examples and
+    /// some kinds of synchronous code, but use `next` or `poll_next` with async code.
+    pub fn try_next(&mut self) -> Option<T> {
+        match self.poll_next(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+            std::task::Poll::Ready(next) => next,
+            std::task::Poll::Pending => None,
+        }
+    }
+
+    /// The raw next value for the Receiver.
+    ///
+    /// * `Poll::Pending` when caught up and waiting for new messages.
+    /// * `Poll::Ready(Some(value))` for the next value.
+    /// * `Poll::Ready(None)` when all senders have been dropped and the Receiver is caught up. The Receiver will never receive more messages and you should drop it.
     pub fn poll_next(&mut self, context: &mut std::task::Context) -> std::task::Poll<Option<T>> {
         match self.buffer.pop_front() {
             Some(next) => std::task::Poll::Ready(Some(next)),
@@ -79,6 +94,10 @@ impl<T> Receiver<T> {
         }
     }
 
+    /// The next value for the Receiver.
+    ///
+    /// * Some(T) is the next value.
+    /// * None when all senders have been dropped and the Receiver is caught up. The Receiver will never receive more messages and you should drop it.
     #[inline]
     pub async fn next(&mut self) -> Option<T> {
         std::future::poll_fn(|context| self.poll_next(context)).await
