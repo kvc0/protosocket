@@ -13,7 +13,7 @@ impl<T> Default for MessagePackSerializer<T> {
     }
 }
 
-impl<T> protosocket::pooled_encoder::Serialize for MessagePackSerializer<T>
+impl<T> protosocket::Serialize for MessagePackSerializer<T>
 where
     T: serde::Serialize + std::fmt::Debug,
 {

@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use protosocket::{pooled_encoder::Serialize, Decoder, DeserializeError};
+use protosocket::{Serialize, Decoder, DeserializeError};
 
 /// A stateless implementation of `Serialize` using `prost`
 #[derive(Default, Debug)]
