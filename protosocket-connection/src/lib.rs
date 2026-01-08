@@ -6,11 +6,13 @@
 //! Normally you will use `Connection` via the protosocket-prost
 //! or protosocket-server crates.
 
+#![deny(missing_docs)]
+
 mod connection;
 mod encoding;
 mod error;
 mod message_reactor;
-pub mod pooled_encoder;
+mod pooled_encoder;
 mod socket_listener;
 
 pub use connection::Connection;

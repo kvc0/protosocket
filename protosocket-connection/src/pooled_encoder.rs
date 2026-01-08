@@ -3,7 +3,13 @@ use std::ops::{Deref, DerefMut};
 use crate::Encoder;
 
 /// Raw serializer for a buffer pool
+///
+/// Serializers use plain reusable `Vec<u8>` to do the work of `Encoder`.
+/// It's an easy compatibility approach, and it works great. But if you want
+/// to do even better, and have a zero-copy message type, you can implement
+/// `Encoder` directly and write your messages straight to the network.
 pub trait Serialize {
+    /// Outbound message type, to be serialized into buffers.
     type Message;
 
     /// Write a message into a pooled buffer

@@ -25,8 +25,11 @@ pub trait SocketListener {
     fn poll_accept(&mut self, context: &mut Context<'_>) -> Poll<SocketResult<Self::Stream>>;
 }
 
+/// A stream or a disconnect from a SocketListener.
 pub enum SocketResult<T> {
+    /// New stream to be accepted
     Stream(T),
+    /// Socket should stop listening
     Disconnect,
 }
 
