@@ -2,20 +2,21 @@
 Message-oriented, low-abstraction tcp streams.
 
 A protosocket is a non-blocking, bidirectional, message streaming connection.
-Providing a serializer and deserializer for your messages, you can stream to
-and from tcp servers.
+Providing an encoder and decoder for your messages, you can stream to and from
+tcp servers.
 
 There is no wrapper encoding - no HTTP, no gRPC, no websockets. You depend on
-TCP and your serialization strategy.
+TCP (and any wrapper you want, like TLS) and your serialization strategy.
 
-Dependencies are trim; `tokio` is the main hard dependency. If you use protocol
-buffers, you will also depend on `prost`. There's no extra underlying framework.
+Dependencies are trim; `tokio` is the main heavy dependency. If you use protocol
+buffers, you will also depend on `prost`. There's no extra underlying framework
+like `axum` or `hyper`.
 
-Protosockets avoid too many opinions - you have (get?) to choose your own
-message ordering and concurrency semantics. You can make an implicitly ordered
-stream, or a non-blocking out-of-order stream, or anything in between.
+Protosocket avoids opinions - you choose your own message ordering and concurrency
+semantics. You can make an implicitly ordered stream, or a non-blocking out-of-order
+stream, or RPC request/response, or whatever.
 
-Tools to facilitate protocol buffers are provided in [`protosocket-prost`](./protosocket-prost/).
+Tools to help working with protocol buffers are provided in [`protosocket-prost`](./protosocket-prost/).
 
 You can write an RPC client/server with [`protosocket-rpc`](./protosocket-rpc/).
 
@@ -41,7 +42,7 @@ and replacing the imports in `h2` for `std::sync::Mutex` with `k_lock::Mutex`.
 This import-replacement for `std::sync::Mutex` tries to be more appropriate for
 `tokio` servers. Basically, it uses a couple heuristics to both wake and spin
 more aggressively than the standard mutex. This is better for `tokio` servers,
-because those threads absolutely _must_ finish poll() asap, and a futex park
+because those threads absolutely _must_ finish `poll()` asap, and a futex park
 blows the poll() budget out the window.
 
 20% wasn't enough, and the main task threads were still getting starved. So I
@@ -61,14 +62,27 @@ test).
 The number Momento looked at historically was `at which throughput threshold does
 the server pass 5 milliseconds at p99.9 tail latency?`
 
+Achievable throughput increased, and latency at all throughputs was significantly
+reduced. This improved the effective vertical scale of the reference workflow.
+
+The effective vertical scale of the small reference server was improved by `2.75x`
+for this workflow by switching the backend protocol from gRPC to protosocket.
+
+## Continuing investment
+As Momento leaned progressively into `protosocket`, the difference grew wider. The
+`v1.0` effort on protosocket focused on removing abstractions and supporting more
+extensibility in `&mut self` contexts. Other needs were found, like
+[`spillway`](./spillway/), via flamegraphs.
+
+Nowadays Momento is far past the previous gRPC benchmark. With protosocket `v1` and
+further efforts, the old throughput/latency benchmark was too lax a standard. We now
+do 100khz on the same server every morning and see sub-millisecond p99.9, and sub-3ms
+p99.99, measured at the client. Performance per ec2 dollar, for small rpcs, is over
+10 times better on protosocket v1 as compared to gRPC.
+
 ## Results
 |                  | Throughput | Latency |
 | -------------    | ---------  | --------- |
-| **gRPC**         | ![grpc throughput peaking at 57.7khz](https://github.com/user-attachments/assets/2a7c9c91-d0c5-410a-adda-d4337432c1c7) | ![grpc latency surpassing 5ms p99.9 below 20khz](https://github.com/user-attachments/assets/15e8c3ec-d4f8-4fed-a236-ae40d08f6e93) |
-| **protosockets** | ![protosockets throughput peaking at 75khz](https://github.com/user-attachments/assets/d1bf1bf3-3640-45d8-9a55-482844f5993a) | ![protosockets latency surpassing 5ms p99.9 above 55khz](https://github.com/user-attachments/assets/c8c90a8a-8f97-403d-b2e4-fc59eccb6b82) |
-
-Achievable throughput increased, but latency at all throughputs was significantly
-reduced. This improved the effective vertical scale of the reference workflow.
-
-The effective vertical scale of the small reference server was improved by 2.75x
-for this workflow by switching the backend protocol from gRPC to protosockets.
+| **gRPC, optimized** | ![grpc throughput peaking at 57.7khz](https://github.com/user-attachments/assets/2a7c9c91-d0c5-410a-adda-d4337432c1c7) | ![grpc latency surpassing 5ms p99.9 below 20khz](https://github.com/user-attachments/assets/15e8c3ec-d4f8-4fed-a236-ae40d08f6e93) |
+| **protosocket v0, initial integration** | ![protosocket throughput peaking at 75khz](https://github.com/user-attachments/assets/d1bf1bf3-3640-45d8-9a55-482844f5993a) | ![protosocket latency surpassing 5ms p99.9 above 55khz](https://github.com/user-attachments/assets/c8c90a8a-8f97-403d-b2e4-fc59eccb6b82) |
+| **protosocket v1, optimized** | ![protosocket v1 throughput at constant 100khz](./resource/20260108-throughput.png) | ![protosocket latency never passing 5ms, even at p99.99](./resource/20260108-latency.png) |

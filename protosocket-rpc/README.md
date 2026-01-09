@@ -1,15 +1,42 @@
 # protosocket-rpc
 For making RPC servers and clients.
 
-A protosocket rpc server consists of a couple key traits:
+This crate provides an rpc-style client and server for protosocket connections.
+If you have very special requirements, like an ordered response requirement,
+you might need to use `protosocket` directly.
 
-* `SocketService`: Your service that takes new connections and produces `ConnectionService`s.
-* `ConnectionService`: Your service that manages a connection, creating new RPC futures and doing bookkeeping.
-* `Message`: Your way to get protosocket metadata out of your encoded messages.
+* See `example-proto` for an example of how to use this crate with protocol buffers.
+* See `example-messagepack` for an example of how to use this crate with messagepack.
 
-A protosocket rpc client is a little more basic, just relying on common protosocket traits and `Message`.
+# Main features
+* It does as little as it can
+  * What you encode is what is on the wire
+  * You do not have to `spawn` if you don't have to
+  * You can output messages with zero-copy serialization with zero copies
+* It does not require `Send`
+* RPC cancellation
+* Response streaming
+* Unopinionated about serialization format: You can do RPC with any format you want.
 
-Protosocket rpc lets you choose any encoding and does not wrap your messages at all. The bytes you
-send are the bytes which are sent. This means you need to provide a way to communicate the basic protosocket
-metadata on each message: A message_id u64 and a control code u8. The `Message` trait helps to ensure you get
-the needful functions wired through.
+# About
+You can use whatever encoding you want, but you must provide both
+an `Encoder` and a `Decoder` for your messages. If you use `prost`, you can use
+the `protosocket-prost` crate to provide these implementations. There's also
+a `protosocket-messagepack` available, and other encodings are similarly
+straightforward to add.
+
+Messages must provide a `Message` implementation, which includes a `message_id`
+and a `control_code`. The `message_id` is used to correlate requests and responses,
+while the `control_code` is used to provide special handling for RPC messages, like
+cancellation.
+
+This RPC layer is medium-low level wrapper around the low level protosocket crate. You
+are expected to write a wrapper with the functions that make sense for your application,
+and use this client as the transport layer.
+
+Clients and servers need to agree about the request and response semantics. While it is
+supported to have dynamic streaming/unary response types, it is recommended to instead
+use separate rpc-initiating request messages for streaming and unary responses.
+
+Protosocket rpc lets you choose any encoding and does not wrap your messages at all. The
+bytes you encode are the bytes which are sent.
