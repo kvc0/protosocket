@@ -15,7 +15,9 @@ use crate::{client::RpcClient, Message};
 ///
 /// This is called asynchronously by the connection pool to create new connections.
 pub trait ClientConnector: Clone {
+    /// Request message type
     type Request: Message;
+    /// Response message type
     type Response: Message;
 
     /// Connect to the server and return a new RpcClient. See [`crate::client::connect`] for

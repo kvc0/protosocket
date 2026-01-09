@@ -9,6 +9,8 @@ use crate::{
     Message,
 };
 
+/// A request context's temporary lease to an RPC Reactor's state.
+/// You want to consume your RpcResponder as quickly as possible.
 #[must_use]
 pub struct RpcResponder<'a, Response> {
     outbound: &'a spillway::Sender<RpcResponse<Response>>,
@@ -31,12 +33,14 @@ where
         }
     }
 
+    /// Consume the responder by providing a future that will materialize the response to this request.
     pub fn unary(self, unary_rpc: impl Future<Output = Response>) -> impl Future<Output = ()> {
         let (abortable, abort) = IdentifiableAbortable::new(unary_rpc);
         self.aborts.register(self.message_id, abort);
         ForwardAbortableUnaryRpc::new(abortable, self.message_id, self.outbound.clone())
     }
 
+    /// Consume the responder by providing a stream that will materialize the response to this request.
     pub fn stream(
         self,
         streaming_rpc: impl futures::Stream<Item = Response>,
@@ -46,6 +50,10 @@ where
         ForwardAbortableStreamingRpc::new(abortable_stream, self.message_id, self.outbound.clone())
     }
 
+    /// Consume the responder by providing an immediate response.
+    ///
+    /// This is the cheapest, fastest way to respond, but you must only use it when you can get a response
+    /// without blocking!
     pub fn immediate(self, response: Response) {
         if self
             .outbound

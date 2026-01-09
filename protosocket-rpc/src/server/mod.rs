@@ -1,3 +1,7 @@
+//! Types and tools for `protosocket-rpc` servers.
+//! 
+//! See example-proto or example-messagepack for how to make servers.
+
 mod abortable;
 mod abortion_tracker;
 mod forward_streaming;

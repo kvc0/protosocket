@@ -17,6 +17,7 @@ pub trait Message: std::fmt::Debug + Send + Unpin + 'static {
     fn ended(message_id: u64) -> Self;
 }
 
+/// System codes for protosocket rpc framework features.
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum ProtosocketControlCode {
@@ -29,6 +30,7 @@ pub enum ProtosocketControlCode {
 }
 
 impl ProtosocketControlCode {
+    /// Read a control code from a u8
     pub fn from_u8(value: u8) -> Self {
         match value {
             0 => Self::Normal,
@@ -38,6 +40,7 @@ impl ProtosocketControlCode {
         }
     }
 
+    /// Write a control code as a u8
     pub fn as_u8(&self) -> u8 {
         match self {
             Self::Normal => 0,
