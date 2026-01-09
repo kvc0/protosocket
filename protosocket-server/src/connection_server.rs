@@ -114,6 +114,7 @@ impl Default for ProtosocketSocketConfig {
     }
 }
 
+/// A configurator for a protosocket server
 pub struct ProtosocketServerConfig {
     max_buffer_length: usize,
     max_queued_outbound_messages: usize,
