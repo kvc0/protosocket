@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use protosocket::{Serialize, Decoder, DeserializeError};
+use protosocket::{Decoder, DeserializeError, Serialize};
 
 /// A stateless implementation of `Serialize` using `prost`
 #[derive(Default, Debug)]

@@ -1,5 +1,5 @@
 //! Types and tools for `protosocket-rpc` servers.
-//! 
+//!
 //! See example-proto or example-messagepack for how to make servers.
 
 mod abortable;

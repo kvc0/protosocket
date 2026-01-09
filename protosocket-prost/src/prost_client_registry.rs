@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use protosocket::{PooledEncoder, Connection, MessageReactor};
+use protosocket::{Connection, MessageReactor, PooledEncoder};
 use tokio::net::TcpStream;
 
 use crate::{prost_serializer::ProstDecoder, ProstSerializer};

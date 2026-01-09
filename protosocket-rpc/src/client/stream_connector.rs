@@ -1,7 +1,6 @@
+use std::{future::Future, sync::Arc};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
-use std::{future::Future, sync::Arc};
-
 
 /// An async handshake that provides an `AsyndRead`/`AsyncWrite` stream.
 ///

@@ -1,5 +1,5 @@
-use std::marker::PhantomData;
 use std::io::Read;
+use std::marker::PhantomData;
 
 /// A deserializer that takes a serde deserializable T and implements
 /// `protosocket::Decoder`. You can use this with a `protosocket`

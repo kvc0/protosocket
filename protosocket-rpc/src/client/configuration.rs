@@ -4,7 +4,11 @@ use std::net::SocketAddr;
 use tokio::net::TcpStream;
 
 use crate::{
-    Message, client::{StreamConnector, reactor::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor}}
+    client::{
+        reactor::completion_reactor::{DoNothingMessageHandler, RpcCompletionReactor},
+        StreamConnector,
+    },
+    Message,
 };
 
 use super::RpcClient;
