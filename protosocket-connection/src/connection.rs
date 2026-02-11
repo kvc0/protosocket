@@ -378,12 +378,21 @@ impl<
                 // 16 is the lowest I've seen mention of, and I've seen 1024 more commonly.
                 const UIO_MAXIOV: usize = 256;
 
-                let buffers: Vec<IoSlice> = self
-                    .send_buffer
-                    .iter()
-                    .take(UIO_MAXIOV)
-                    .map(|v| IoSlice::new(v.chunk()))
-                    .collect();
+                // Use chunks_vectored rather than chunk() to correctly handle
+                // Buf implementations that aren't backed by a single contiguous slice.
+                let mut buffers = vec![IoSlice::new(&[]); UIO_MAXIOV];
+                let mut filled = 0;
+                for buf in self.send_buffer.iter() {
+                    if UIO_MAXIOV <= filled {
+                        break;
+                    }
+                    let n = buf.chunks_vectored(&mut buffers[filled..]);
+                    if n == 0 {
+                        break;
+                    }
+                    filled += n;
+                }
+                buffers.truncate(filled);
 
                 #[cfg(feature = "tracing")]
                 let span = tracing::span!(tracing::Level::INFO, "writing", buffers = buffers.len());
