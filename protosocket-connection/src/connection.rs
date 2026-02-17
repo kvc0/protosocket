@@ -398,7 +398,7 @@ impl<
                 let span = tracing::span!(tracing::Level::INFO, "writing", buffers = buffers.len());
                 #[cfg(feature = "tracing")]
                 let span_guard = span.enter();
-                let poll = pin!(&mut self.stream).poll_write_vectored(context, &buffers);
+                let poll = pin!(&mut self.stream).poll_write_vectored(context, buffers);
                 #[cfg(feature = "tracing")]
                 drop(span_guard);
                 match poll {
@@ -432,7 +432,7 @@ impl<
                             "error while writing to tcp stream: {err:?}, buffers: {}, {}b: {:?}",
                             buffers.len(),
                             buffers.iter().map(|b| b.len()).sum::<usize>(),
-                            buffers.into_iter().map(|b| b.len()).collect::<Vec<_>>()
+                            buffers.iter().map(|b| b.len()).collect::<Vec<_>>()
                         );
                         Err(err)
                     }
