@@ -380,19 +380,19 @@ impl<
 
                 // Use chunks_vectored rather than chunk() to correctly handle
                 // Buf implementations that aren't backed by a single contiguous slice.
-                let mut buffers = vec![IoSlice::new(&[]); UIO_MAXIOV];
+                let mut stack_buffers = [IoSlice::new(&[]); UIO_MAXIOV];
                 let mut filled = 0;
                 for buf in self.send_buffer.iter() {
                     if UIO_MAXIOV <= filled {
                         break;
                     }
-                    let n = buf.chunks_vectored(&mut buffers[filled..]);
+                    let n = buf.chunks_vectored(&mut stack_buffers[filled..]);
                     if n == 0 {
                         break;
                     }
                     filled += n;
                 }
-                buffers.truncate(filled);
+                let buffers = &stack_buffers[..filled];
 
                 #[cfg(feature = "tracing")]
                 let span = tracing::span!(tracing::Level::INFO, "writing", buffers = buffers.len());
