@@ -2,7 +2,9 @@ name: PR
 
 on:
   pull_request:
-    branches: [ main ]
+    types:
+      - opened
+      - reopened
 
 env:
   CARGO_TERM_COLOR: always
