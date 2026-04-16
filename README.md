@@ -24,28 +24,27 @@ stream, or RPC request/response, or whatever.
 ## Typical RPC interaction
 
 ```
-CLIENT                                  │                        SERVER
-────────────────────────────────────────┼────────────────────────────────────────────────────────
-                                        │
-let completion = rpc_client             │
-  .send_unary(--your_request--);        │
-  │                                     │
-  └─► [spillway MPSC channel]           │
-        └─► Connection::poll()          │
-              encode ► writev ──────────┼──────────────────► Connection::poll()
-                                        │   (bytes over TCP)   read ► decode
-                                        │                      on_inbound_message()
-                                        │                        └─► --YourConnectionService--
-                                        │                               ::new_rpc(msg, responder)
-                                        │                                 │
-                                        │                           [handle your request]
-                                        │                                 │
-                                        │                           responder.unary(result)
-                                        │                                 │
-(response) ── decode ◄ read ◄───────────┼───(bytes over TCP)── writev ◄ encode
-  │           (response)                │
-  ▼                                     │
-let your_response = completion.await;   │
+               CLIENT                 │                SERVER
+──────────────────────────────────────┼────────────────────────────────────────
+                                      │
+let completion = rpc_client           │
+  .send_unary(--your_request--);      │
+  │                                   │
+  └─► [spillway MPSC channel]         │
+        └─► Connection::poll()        │    Connection::poll()
+              encode ► writev ────────┼────► read ► decode
+                                      │      on_inbound_message()
+                                      │        └─► --YourConnectionService--
+                                      │               ::new_rpc(msg, responder)
+                                      │                 │
+                                      │           [handle your request]
+                                      │                 │
+                                      │           responder.unary(result)
+                                      │                 │
+(response) ── decode ◄ read ◄─────────┼───── writev ◄ encode
+  │           (response)              │
+  ▼                                   │
+let your_response = completion.await; │
 ```
 
 The `spillway` channel lets many threads enqueue outbound messages concurrently without
@@ -53,7 +52,6 @@ contention. The `Connection` poll loop handles encode/decode, TCP I/O, and conne
 management in one place, without locks.
 
 Dropping `completion` before it resolves automatically sends a cancellation to the server.
-
 
 
 # A story of use in production
