@@ -4,10 +4,10 @@
 
 #![deny(missing_docs)]
 
+mod decoder;
 mod error;
-mod prost_client_registry;
-mod prost_serializer;
+mod serializer;
 
+pub use decoder::ProstDecoder;
 pub use error::{Error, Result};
-pub use prost_client_registry::ClientRegistry;
-pub use prost_serializer::{ProstDecoder, ProstSerializer};
+pub use serializer::ProstSerializer;

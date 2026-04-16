@@ -35,7 +35,7 @@ pub trait MessageReactor: 'static {
 
     /// Called from the connection's driver task when messages are sent.
     ///
-    /// You can use this to track outbound messages, or to for logging or metrics.
+    /// You can use this to track outbound messages, or for logging, or metrics, or whatever.
     fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound;
 }
 

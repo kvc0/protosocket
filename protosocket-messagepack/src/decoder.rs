@@ -5,12 +5,12 @@ use std::marker::PhantomData;
 /// `protosocket::Decoder`. You can use this with a `protosocket`
 /// Connection or rpc.
 #[derive(Debug)]
-pub struct ProtosocketMessagePackDecoder<T> {
+pub struct MessagePackDecoder<T> {
     _phantom: std::marker::PhantomData<T>,
     state: State,
 }
 
-impl<T> Default for ProtosocketMessagePackDecoder<T> {
+impl<T> Default for MessagePackDecoder<T> {
     fn default() -> Self {
         Self {
             _phantom: PhantomData,
@@ -26,7 +26,7 @@ enum State {
     ReadingLength(u32),
 }
 
-impl<T> protosocket::Decoder for ProtosocketMessagePackDecoder<T>
+impl<T> protosocket::Decoder for MessagePackDecoder<T>
 where
     T: serde::de::DeserializeOwned + std::fmt::Debug,
 {

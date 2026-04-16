@@ -92,7 +92,7 @@ impl Builder {
         self
     }
 
-    /// How many blocking threads should each local runtime be able to create? (Devault is 512)
+    /// How many blocking threads should each local runtime be able to create? (Default is 512)
     pub fn max_blocking_threads(&mut self, capacity: usize) -> &mut Self {
         self.builder.max_blocking_threads(capacity);
         self

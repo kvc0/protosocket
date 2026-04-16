@@ -54,9 +54,13 @@ pub trait ConnectionService: Unpin + 'static {
     /// The type of response message, These messages complete rpcs, or are streamed from them.
     type Response: Message;
 
-    /// Create a new rpc task completion.
+    /// Called with an initiating message from the client, the Reponder is how you send your response.
     ///
-    /// You send the response via the RpcResponder.
+    /// If you drop the responder, the rpc is cancelled. If you send a response, the rpc is completed.
+    ///
+    /// If you want to, you can `Send` the responder into a task, e.g., via `tokio::spawn`, and
+    /// complete the rpc from there. The client will wait until the responder is dropped or a response
+    /// is sent, in theory.
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,

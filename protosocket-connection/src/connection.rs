@@ -87,13 +87,9 @@ impl<
 {
     type Output = ();
 
-    /// Take a look at ConnectionBindings for the type definitions used by the Connection
-    ///
-    /// This method performs the following steps:
-    ///
     /// 1. Check for read readiness and read into the receive_buffer (up to max_buffer_length).
-    /// 2. Deserialize the read bytes into Messages and store them in the inbound_messages queue.
-    /// 3. Dispatch messages as they are deserialized using the user-provided MessageReactor.
+    /// 2. Dispatch messages as they are deserialized using the user-provided MessageReactor.
+    /// 3. Poll the MessageReactor - do it here so we can respond to trivial messages _in this poll_.
     /// 4. Serialize messages from outbound_messages queue, up to max_queued_send_messages.
     /// 5. Send serialized messages.
     // #[tracing::instrument(skip_all, fields(self.name = %self.name))]
@@ -113,7 +109,6 @@ impl<
             return Poll::Ready(());
         }
 
-        // Step 4-5: Serialize and send outbound messages
         log::trace!("polling write");
         match self.poll_writev_buffers(context) {
             Ok(false) => {

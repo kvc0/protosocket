@@ -150,7 +150,10 @@ impl bytes::Buf for OwnedBuffer {
 
     #[inline(always)]
     fn advance(&mut self, cnt: usize) {
-        assert!(self.buffer.len() <= self.cursor + cnt);
+        assert!(
+            self.cursor + cnt <= self.buffer.len(),
+            "can't advance past the end of the buffer"
+        );
         self.cursor += cnt;
     }
 }

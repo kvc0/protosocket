@@ -5,5 +5,5 @@
 mod decoder;
 mod serializer;
 
-pub use decoder::ProtosocketMessagePackDecoder;
+pub use decoder::MessagePackDecoder;
 pub use serializer::MessagePackSerializer;

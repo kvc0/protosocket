@@ -59,7 +59,7 @@ impl SocketService for DemoRpcSocketService {
         // Use a pooled encoder to amortize memory allocation cost.
         // Each connection gets its own little memory pool.
         PooledEncoder<protosocket_messagepack::MessagePackSerializer<Response>>,
-        protosocket_messagepack::ProtosocketMessagePackDecoder<Request>,
+        protosocket_messagepack::MessagePackDecoder<Request>,
     );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;

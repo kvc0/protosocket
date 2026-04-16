@@ -17,7 +17,8 @@ use super::server_traits::SocketService;
 /// with a ConnectionService to handle each connection.
 ///
 /// Protosockets use monomorphic messages: You can only have 1 kind of message per service.
-/// The expected way to work with this is to use prost and protocol buffers to encode messages.
+/// The expected way to work with this is to use prost, messagepack, or some other format that
+/// has a notion of a `oneof`, and list your message types in that.
 ///
 /// The socket server hosts your SocketService.
 /// Your SocketService creates a ConnectionService for each new connection.
