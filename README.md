@@ -1,28 +1,62 @@
 # protosocket
-Message-oriented, low-abstraction tcp streams.
+Low-abstraction, bidirectional messages on tcp.
 
 A protosocket is a non-blocking, bidirectional, message streaming connection.
 Providing an encoder and decoder for your messages, you can stream to and from
-tcp servers.
+tcp clients and servers.
 
 There is no wrapper encoding - no HTTP, no gRPC, no websockets. You depend on
 TCP (and any wrapper you want, like TLS) and your serialization strategy.
 
-Dependencies are trim; `tokio` is the main heavy dependency. If you use protocol
-buffers, you will also depend on `prost`. There's no extra underlying framework
-like `axum` or `hyper`.
+`tokio` is the main heavy dependency. If you use protocol buffers, you will also
+depend on `prost`. There's no extra underlying framework like `axum` or `hyper`.
+Mostly `tokio`, and its dependencies like `mio`.
 
 Protosocket avoids opinions - you choose your own message ordering and concurrency
 semantics. You can make an implicitly ordered stream, or a non-blocking out-of-order
 stream, or RPC request/response, or whatever.
 
-Tools to help working with protocol buffers are provided in [`protosocket-prost`](./protosocket-prost/).
+* Tools to help working with messagepack are provided in [`protosocket-messagepack`](./protosocket-messagepack/).
+* Tools to help working with protocol buffers are provided in [`protosocket-prost`](./protosocket-prost/).
+* You can write an RPC client/server with [`protosocket-rpc`](./protosocket-rpc/).
+* You can see an example of protocol buffers RPC in [`example-proto`](./example-proto/).
 
-You can write an RPC client/server with [`protosocket-rpc`](./protosocket-rpc/).
+## Typical RPC interaction
 
-You can see an example of protocol buffers RPC in [`example-proto`](./example-proto/).
+```
+CLIENT                                  │                        SERVER
+────────────────────────────────────────┼────────────────────────────────────────────────────────
+                                        │
+let completion = rpc_client             │
+  .send_unary(--your_request--);        │
+  │                                     │
+  └─► [spillway MPSC channel]           │
+        └─► Connection::poll()          │
+              encode ► writev ──────────┼──────────────────► Connection::poll()
+                                        │   (bytes over TCP)   read ► decode
+                                        │                      on_inbound_message()
+                                        │                        └─► --YourConnectionService--
+                                        │                               ::new_rpc(msg, responder)
+                                        │                                 │
+                                        │                           [handle your request]
+                                        │                                 │
+                                        │                           responder.unary(result)
+                                        │                                 │
+(response) ── decode ◄ read ◄───────────┼───(bytes over TCP)── writev ◄ encode
+  │           (response)                │
+  ▼                                     │
+let your_response = completion.await;   │
+```
 
-# Case study
+The `spillway` channel lets many threads enqueue outbound messages concurrently without
+contention. The `Connection` poll loop handles encode/decode, TCP I/O, and connection state
+management in one place, without locks.
+
+Dropping `completion` before it resolves automatically sends a cancellation to the server.
+
+
+
+# A story of use in production
 ## Background
 (Full disclosure: I work at Momento at time of writing this): [Momento](https://www.gomomento.com/)
 has historically been a gRPC company. In a particular backend service with a
