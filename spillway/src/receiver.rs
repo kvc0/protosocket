@@ -109,7 +109,7 @@ impl<T> Receiver<T> {
     /// * None when all senders have been dropped and the Receiver is caught up. The Receiver will never receive more messages and you should drop it.
     /// * You will never receive an empty iterator.
     #[inline]
-    pub async fn next_batch<'a>(&'a mut self) -> Option<impl Iterator<Item = T> + 'a> {
+    pub async fn next_batch<'a>(&'a mut self) -> Option<impl ExactSizeIterator<Item = T> + 'a> {
         std::future::poll_fn(|context| {
             match self.poll_next(context) {
                 std::task::Poll::Ready(Some(next)) => {
@@ -139,6 +139,17 @@ impl<T> Iterator for BatchDrain<'_, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.buffer.pop_front()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.buffer.len();
+        (len, Some(len))
+    }
+}
+
+impl<T> ExactSizeIterator for BatchDrain<'_, T> {
+    fn len(&self) -> usize {
+        self.buffer.len()
     }
 }
 
