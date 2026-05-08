@@ -102,11 +102,51 @@ impl<T> Receiver<T> {
     pub async fn next(&mut self) -> Option<T> {
         std::future::poll_fn(|context| self.poll_next(context)).await
     }
+
+    /// The next values for the Receiver.
+    ///
+    /// * Some(T) is an iterator over the next values.
+    /// * None when all senders have been dropped and the Receiver is caught up. The Receiver will never receive more messages and you should drop it.
+    /// * You will never receive an empty iterator.
+    #[inline]
+    pub async fn next_batch<'a>(&'a mut self) -> Option<impl Iterator<Item = T> + 'a> {
+        std::future::poll_fn(|context| {
+            match self.poll_next(context) {
+                std::task::Poll::Ready(Some(next)) => {
+                    // we got one, but let's see if we can get more while we're here.
+                    // for convenience, we'll put the item back and drain the whole batch.
+                    self.buffer.push_front(next);
+                    // SAFETY: we have exclusive access to self for 'a. self itself is not referenced out from the fnmut, but the buffer is, which is
+                    //         causing some borrow checker consternation. But since the buffer mutable borrow cannot outlive 'a, and &mut self can't
+                    //         outlive 'a either, the borrow of buffer should be sound for 'a.
+                    std::task::Poll::Ready(Some(BatchDrain {
+                        buffer: unsafe { &mut *(&mut self.buffer as *mut _) },
+                    }))
+                }
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        })
+        .await
+    }
+}
+
+struct BatchDrain<'a, T> {
+    buffer: &'a mut VecDeque<T>,
+}
+impl<T> Iterator for BatchDrain<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.buffer.pop_front()
+    }
 }
 
 #[cfg(test)]
 mod test {
     use std::task::{Context, Poll, Waker};
+
+    use futures::FutureExt;
 
     use crate::{channel_with_concurrency, Receiver};
 
@@ -163,5 +203,31 @@ mod test {
         assert_eq!(Poll::Ready(Some(3)), poll(&mut receiver));
         assert_eq!(Poll::Ready(Some(4)), poll(&mut receiver));
         assert_eq!(Poll::Pending, poll(&mut receiver));
+    }
+
+    #[test]
+    fn test_channel_batch() {
+        let (sender, mut receiver) = channel_with_concurrency(2);
+        let sender2 = sender.clone();
+        sender.send(0).expect("sends");
+        sender.send(1).expect("sends");
+        sender2.send(2).expect("sends");
+        sender2.send(3).expect("sends");
+
+        let batch1: Vec<_> = receiver
+            .next_batch()
+            .now_or_never()
+            .expect("should poll ready immediately")
+            .expect("should have a batch")
+            .collect();
+        let batch2: Vec<_> = receiver
+            .next_batch()
+            .now_or_never()
+            .expect("should poll ready immediately")
+            .expect("should have a batch")
+            .collect();
+
+        assert_eq!(vec![0, 1], batch1);
+        assert_eq!(vec![2, 3], batch2);
     }
 }
