@@ -59,4 +59,25 @@ impl<T> Sender<T> {
     pub fn send(&self, value: T) -> Result<(), T> {
         self.shared.send(self.chute, value)
     }
+
+    /// Send a batch of values to the Receiver.
+    ///
+    /// Messages are only guaranteed to arrive in order on a per-Sender basis.
+    ///
+    /// `send_many` will result in the batch being sent atomically; once the receiver sees the first
+    /// value from the batch, it is guaranteed to see all of the values in the batch before any other
+    /// values.
+    ///
+    /// If you send [1, 2, 3] in this Sender, at the same time as you send [4, 5] and then 6 from
+    /// another Sender, each of these orderings (and no others) are valid and possible for the
+    /// Receiver to see:
+    ///
+    /// |      order       |
+    /// | ---------------- |
+    /// | 1, 2, 3, 4, 5, 6 |
+    /// | 4, 5, 1, 2, 3, 6 |
+    /// | 4, 5, 6, 1, 2, 3 |
+    pub fn send_many<I: IntoIterator<Item = T>>(&self, values: I) -> Result<(), I> {
+        self.shared.send_many(self.chute, values)
+    }
 }

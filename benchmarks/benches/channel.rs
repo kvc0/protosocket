@@ -83,6 +83,43 @@ fn mpsc_or_queues(criterion: &mut Criterion) {
                 elapsed
             });
     });
+
+    group.bench_function("spillway_batch", |bencher| {
+        bencher
+            .to_async(runtime(threads))
+            .iter_custom(async |size| {
+                let (send, mut receive) = spillway::channel_with_concurrency(threads);
+                let receiver = tokio::spawn(async move {
+                    let mut i = 0;
+                    while let Some(v) = receive.next().await {
+                        i += v;
+                    }
+                    i
+                });
+
+                for _ in 0..threads {
+                    let send = send.clone();
+                    tokio::spawn(async move {
+                        let per_thread = (size as usize / threads).max(1);
+                        let batches = per_thread.div_ceil(32);
+                        for _ in 0..batches {
+                            let _ = send.send_many(0_usize..32);
+                        }
+                    });
+                }
+                drop(send);
+
+                let start = Instant::now();
+                let n = receiver.await;
+                let elapsed = start.elapsed();
+                log::info!("ok {n:?}");
+                let per_thread = (size as usize / threads).max(1);
+                let batches = per_thread.div_ceil(32);
+                let expected: usize = (0..32).sum::<usize>() * batches * threads;
+                assert_eq!(n.expect("must join successfully"), expected);
+                elapsed
+            });
+    });
 }
 
 fn runtime(threads: usize) -> tokio::runtime::Runtime {

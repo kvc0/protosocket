@@ -27,15 +27,15 @@ impl<T> Default for Chute<T> {
     }
 }
 impl<T> Chute<T> {
-    pub fn send(&self, t: T, on_dirty: impl FnOnce()) {
+    pub fn send_many<I: IntoIterator<Item = T>>(&self, t: I, on_dirty: impl FnOnce()) {
         let mut queue = self.queue.lock().expect("must not be poisoned");
         let length = queue.len();
-        queue.push_back(t);
+        queue.extend(t);
         if length == 0 {
             self.clean.swap(false, std::sync::atomic::Ordering::AcqRel);
             on_dirty()
         } else {
-            log::debug!("sent one, length: {}", length + 1);
+            log::debug!("sent {}, length: {}", queue.len() - length, queue.len());
         }
     }
 
@@ -112,14 +112,26 @@ impl<T> Shared<T> {
         if self.dead.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(value);
         }
-        self.chutes[chute].send(value, || {
+        self.send_many_infallible(chute, [value]);
+        Ok(())
+    }
+
+    pub fn send_many<I: IntoIterator<Item = T>>(&self, chute: usize, values: I) -> Result<(), I> {
+        if self.dead.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(values);
+        }
+        self.send_many_infallible(chute, values);
+        Ok(())
+    }
+
+    fn send_many_infallible<I: IntoIterator<Item = T>>(&self, chute: usize, values: I) {
+        self.chutes[chute].send_many(values, || {
             // only bother with waking when we transition to a non-empty state.
             // the receiver task will be pending for other reasons as long as there are entries in at least one chute.
             self.waker.wake();
             log::debug!("woke for clean falling edge: {chute}");
         });
         log::debug!("sent one: {chute}");
-        Ok(())
     }
 
     pub fn race_find_dirty(&self, starting_wrap_offset: usize) -> Option<usize> {
