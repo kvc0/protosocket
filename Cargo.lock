@@ -1825,6 +1825,7 @@ dependencies = [
  "futures",
  "log",
  "rand",
+ "thiserror 2.0.17",
  "tokio-test",
 ]
 

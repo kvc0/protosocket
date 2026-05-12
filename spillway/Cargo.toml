@@ -13,6 +13,7 @@ categories.workspace = true
 futures                 = { workspace = true }
 log                     = { workspace = true }
 rand                    = { workspace = true }
+thiserror               = { workspace = true }
 
 [dev-dependencies]
 tokio-test              = { workspace = true }

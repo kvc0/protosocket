@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::shared::Shared;
+use crate::{shared::Shared, Error};
 
 /// The sending half of a Spillway channel.
 ///
@@ -56,7 +56,10 @@ impl<T> Sender<T> {
     /// However, you might receive 1, 4, 5, 2, 3, 6 or any other interleaving. But
     /// 1 will always appear before 2, and 2 before 3; and 4 will always appear before 5,
     /// and 5 before 6.
-    pub fn send(&self, value: T) -> Result<(), T> {
+    ///
+    /// Returns [`Error::Full`] if the channel has reached its capacity limit, or
+    /// [`Error::Closed`] if the Receiver has been dropped.
+    pub fn send(&self, value: T) -> Result<(), Error<T>> {
         self.shared.send(self.chute, value)
     }
 
@@ -77,7 +80,15 @@ impl<T> Sender<T> {
     /// | 1, 2, 3, 4, 5, 6 |
     /// | 4, 5, 1, 2, 3, 6 |
     /// | 4, 5, 6, 1, 2, 3 |
-    pub fn send_many<I: IntoIterator<Item = T>>(&self, values: I) -> Result<(), I> {
+    ///
+    /// Returns [`Error::Full`] if the batch would push the channel past its capacity
+    /// limit (the entire batch is rejected; partial enqueues never happen), or
+    /// [`Error::Closed`] if the Receiver has been dropped.
+    pub fn send_many<I>(&self, values: I) -> Result<(), Error<I::IntoIter>>
+    where
+        I: IntoIterator<Item = T>,
+        I::IntoIter: ExactSizeIterator,
+    {
         self.shared.send_many(self.chute, values)
     }
 }

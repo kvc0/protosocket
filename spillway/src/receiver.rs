@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicU64, Arc},
+};
 
 use crate::shared::Shared;
 
@@ -43,7 +46,10 @@ impl<T> Receiver<T> {
     /// * `Poll::Ready(None)` when all senders have been dropped and the Receiver is caught up. The Receiver will never receive more messages and you should drop it.
     pub fn poll_next(&mut self, context: &mut std::task::Context) -> std::task::Poll<Option<T>> {
         match self.buffer.pop_front() {
-            Some(next) => std::task::Poll::Ready(Some(next)),
+            Some(next) => {
+                self.decrement_size(1);
+                std::task::Poll::Ready(Some(next))
+            }
             None => {
                 let dirty_index = match self.shared.race_find_dirty(self.cursor) {
                     Some(dirty_index) => {
@@ -89,8 +95,17 @@ impl<T> Receiver<T> {
                     .buffer
                     .pop_front()
                     .expect("chutes are only dirty when they have contents");
+                self.decrement_size(1);
                 std::task::Poll::Ready(Some(next))
             }
+        }
+    }
+
+    fn decrement_size(&self, count: usize) {
+        if self.shared.capacity != u64::MAX {
+            self.shared
+                .channel_size
+                .fetch_sub(count as u64, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -116,11 +131,29 @@ impl<T> Receiver<T> {
                     // we got one, but let's see if we can get more while we're here.
                     // for convenience, we'll put the item back and drain the whole batch.
                     self.buffer.push_front(next);
+                    // poll_next decremented channel_size by 1; put that one back. BatchDrain will
+                    // decrement once on Drop for however many items the caller consumes.
+                    if self.shared.capacity != u64::MAX {
+                        self.shared
+                            .channel_size
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let initial_len = self.buffer.len();
+                    let channel_size = if self.shared.capacity == u64::MAX {
+                        None
+                    } else {
+                        // SAFETY: same lifetime widening as `buffer` below — this borrow is into
+                        // `self.shared.channel_size`, which lives at least as long as 'a (it lives
+                        // as long as the Arc held by `self`).
+                        Some(unsafe { &*(&self.shared.channel_size as *const AtomicU64) })
+                    };
                     // SAFETY: we have exclusive access to self for 'a. self itself is not referenced out from the fnmut, but the buffer is, which is
                     //         causing some borrow checker consternation. But since the buffer mutable borrow cannot outlive 'a, and &mut self can't
                     //         outlive 'a either, the borrow of buffer should be sound for 'a.
                     std::task::Poll::Ready(Some(BatchDrain {
                         buffer: unsafe { &mut *(&mut self.buffer as *mut _) },
+                        channel_size,
+                        initial_len,
                     }))
                 }
                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
@@ -133,6 +166,8 @@ impl<T> Receiver<T> {
 
 struct BatchDrain<'a, T> {
     buffer: &'a mut VecDeque<T>,
+    channel_size: Option<&'a AtomicU64>,
+    initial_len: usize,
 }
 impl<T> Iterator for BatchDrain<'_, T> {
     type Item = T;
@@ -150,6 +185,17 @@ impl<T> Iterator for BatchDrain<'_, T> {
 impl<T> ExactSizeIterator for BatchDrain<'_, T> {
     fn len(&self) -> usize {
         self.buffer.len()
+    }
+}
+
+impl<T> Drop for BatchDrain<'_, T> {
+    fn drop(&mut self) {
+        if let Some(channel_size) = self.channel_size {
+            let consumed = self.initial_len - self.buffer.len();
+            if consumed != 0 {
+                channel_size.fetch_sub(consumed as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 }
 
