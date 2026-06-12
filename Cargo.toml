@@ -11,6 +11,7 @@ members = [
     "example-telnet",
     "level-runtime",
     "protosocket-connection",
+    "protosocket-efa",
     "protosocket-messagepack",
     "protosocket-prost",
     "protosocket-rpc",
@@ -40,6 +41,7 @@ protosocket-prost       = { path = "protosocket-prost" }
 spillway                = { path = "spillway", version = "1.0.0" }
 
 ahash                   = { version = "0" }
+ofi-libfabric-sys       = { version = "0.1" }
 bytes                   = { version = "1.6" }
 criterion               = { version = "0" }
 env_logger              = { version = "0.11" }

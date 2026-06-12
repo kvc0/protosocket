@@ -20,6 +20,13 @@ jobs:
         components: rustfmt, clippy
     - uses: Swatinem/rust-cache@v2
 
+    # protosocket-efa links against libfabric (via ofi-libfabric-sys). The dev
+    # package provides the headers/library and the host-independent providers
+    # (tcp/udp/shm), so the crate builds, clippies, and its loopback test runs
+    # without EFA hardware. EFA itself requires AWS EC2 instances.
+    - name: Install libfabric
+      run: sudo apt-get update && sudo apt-get install -y libfabric-dev
+
     - name: Rustfmt
       run: cargo fmt -- --check
     - name: Clippy

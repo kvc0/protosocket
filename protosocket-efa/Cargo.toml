@@ -1,0 +1,26 @@
+[package]
+name = "protosocket-efa"
+description = "libfabric-backed (AWS EFA / RDMA) SocketListener for protosocket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+protosocket             = { workspace = true }
+spillway                = { workspace = true }
+ofi-libfabric-sys       = { workspace = true }
+
+bytes                   = { workspace = true }
+futures                 = { workspace = true }
+log                     = { workspace = true }
+socket2                 = { workspace = true }
+thiserror               = { workspace = true }
+tokio                   = { workspace = true, features = ["net", "rt", "io-util", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio                   = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "time"] }
+env_logger              = { workspace = true }
