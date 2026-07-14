@@ -12,9 +12,79 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::{
     encoding::Codec,
     interrupted,
-    message_reactor::{MessageReactor, ReactorStatus},
+    message_reactor::{MessageReactor, ReactorStatus, SendBudget, SendManyPermit, SendPermit},
     would_block, Decoder, DeserializeError, Encoder,
 };
+
+/// The connection's send capacity, spent by encoding directly into the send buffer.
+struct EncodingSendBudget<'a, TCodec: Codec> {
+    codec: &'a mut TCodec,
+    send_buffer: &'a mut VecDeque<<TCodec as Encoder>::Serialized>,
+    remaining: usize,
+}
+
+impl<TCodec: Codec> SendBudget<<TCodec as Encoder>::Message> for EncodingSendBudget<'_, TCodec> {
+    fn reserve(&mut self) -> Option<impl SendPermit<<TCodec as Encoder>::Message> + '_> {
+        if self.remaining == 0 {
+            None
+        } else {
+            Some(EncodingSendPermit { budget: self })
+        }
+    }
+
+    fn reserve_many(
+        &mut self,
+        count: usize,
+    ) -> impl SendManyPermit<<TCodec as Encoder>::Message> + '_ {
+        let reserved = count.min(self.remaining);
+        EncodingSendManyPermit {
+            budget: self,
+            reserved,
+        }
+    }
+}
+
+/// A reserved slot in the send buffer.
+struct EncodingSendPermit<'a, 'b, TCodec: Codec> {
+    budget: &'a mut EncodingSendBudget<'b, TCodec>,
+}
+
+impl<TCodec: Codec> SendPermit<<TCodec as Encoder>::Message>
+    for EncodingSendPermit<'_, '_, TCodec>
+{
+    fn send(self, message: <TCodec as Encoder>::Message) {
+        self.budget.remaining -= 1;
+        let buffer = self.budget.codec.encode(message);
+        log::trace!("serialized reactor message: {}b", buffer.remaining());
+        self.budget.send_buffer.push_back(buffer);
+    }
+}
+
+/// A reserved run of slots in the send buffer.
+struct EncodingSendManyPermit<'a, 'b, TCodec: Codec> {
+    budget: &'a mut EncodingSendBudget<'b, TCodec>,
+    reserved: usize,
+}
+
+impl<TCodec: Codec> SendManyPermit<<TCodec as Encoder>::Message>
+    for EncodingSendManyPermit<'_, '_, TCodec>
+{
+    fn reserved(&self) -> usize {
+        self.reserved
+    }
+
+    fn send(&mut self, message: <TCodec as Encoder>::Message) {
+        assert!(
+            0 < self.reserved,
+            "sent more messages than the permit reserved"
+        );
+        self.reserved -= 1;
+        self.budget.remaining -= 1;
+        let buffer = self.budget.codec.encode(message);
+        log::trace!("serialized reactor message: {}b", buffer.remaining());
+        self.budget.send_buffer.push_back(buffer);
+    }
+}
 
 /// A bidirectional, message-oriented AsyncRead/AsyncWrite stream wrapper.
 ///
@@ -37,9 +107,6 @@ pub struct Connection<
 > {
     stream: TStream,
     outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
-    /// Reusable landing area for reactor-produced messages, drained through
-    /// `on_outbound_message` and the codec each poll. Bounded by the send budget.
-    reactor_outbound_scratch: VecDeque<TReactor::LogicalOutbound>,
     send_buffer: VecDeque<<TCodec as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
@@ -186,7 +253,6 @@ impl<
         Self {
             stream,
             outbound_messages,
-            reactor_outbound_scratch: Default::default(),
             send_buffer: Default::default(),
             receive_buffer: Vec::new(),
             max_buffer_length,
@@ -327,7 +393,10 @@ impl<
         }
     }
 
-    /// This serializes work-in-progress messages and moves them over into the write queue
+    /// This serializes work-in-progress messages and moves them over into the write queue.
+    ///
+    /// Outbound messages come from the queue and from the reactor, in that order, within
+    /// the send budget. The connection closes when both sources are exhausted.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let max_outbound = self.max_queued_send_messages - self.send_buffer.len();
@@ -337,12 +406,6 @@ impl<
             return Poll::Pending;
         }
 
-        // The connection has two outbound sources: the queued outbound messages and the
-        // reactor's own message production (e.g., streaming rpcs). Both are only polled
-        // here, within the send budget, so a connection that cannot write does not
-        // advance the work that produces messages. The connection closes when both
-        // sources are exhausted: the queue's senders are all dropped and the reactor is
-        // finished.
         let start_len = self.send_buffer.len();
         let mut queue_closed = false;
         while self.send_buffer.len() - start_len < max_outbound {
@@ -367,29 +430,23 @@ impl<
 
         let remaining = max_outbound - (self.send_buffer.len() - start_len);
         if 0 < remaining {
-            let scratch = &mut self.reactor_outbound_scratch;
-            debug_assert!(scratch.is_empty(), "scratch is always drained after use");
-            let mut sink = |message: TReactor::LogicalOutbound| {
-                scratch.push_back(message);
+            let Self {
+                send_buffer,
+                reactor,
+                codec,
+                ..
+            } = self;
+            let mut outbound = EncodingSendBudget {
+                codec,
+                send_buffer,
+                remaining,
             };
             // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
-            let reactor_state = unsafe { Pin::new_unchecked(&mut self.reactor) }
-                .poll_outbound_many(context, &mut sink, remaining);
-            // Reactor-produced messages get the same treatment as queued messages:
-            // through on_outbound_message, then the codec.
-            while let Some(message) = self.reactor_outbound_scratch.pop_front() {
-                let message = self.reactor.on_outbound_message(message);
-                let buffer = self.codec.encode(message);
-                log::trace!("serialized reactor message: {}b", buffer.remaining());
-                self.send_buffer.push_back(buffer);
-            }
-            if let Poll::Ready(None) = reactor_state {
-                if queue_closed {
-                    log::info!("all outbound message sources are exhausted");
-                    return Poll::Ready(());
-                }
-                // The reactor never produces messages; the live outbound queue
-                // governs this connection's lifetime.
+            let reactor_state =
+                unsafe { Pin::new_unchecked(reactor) }.poll_outbound_many(context, &mut outbound);
+            if queue_closed && matches!(reactor_state, Poll::Ready(None)) {
+                log::info!("all outbound message sources are exhausted");
+                return Poll::Ready(());
             }
         }
         let new_len = self.send_buffer.len();

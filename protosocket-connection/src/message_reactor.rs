@@ -33,41 +33,62 @@ pub trait MessageReactor: 'static {
         std::ops::ControlFlow::Continue(())
     }
 
-    /// Called from the connection's driver task when messages are sent.
+    /// Called from the connection's driver task when messages from the outbound queue
+    /// are sent. Messages produced by `poll_outbound_many` do not come through here.
     ///
     /// You can use this to track outbound messages, or for logging, or metrics, or whatever.
     fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound;
 
-    /// Produce outbound messages from the reactor itself, up to `budget` of them,
-    /// delivered through `sink`.
+    /// Produce outbound wire messages into `outbound`.
     ///
-    /// This is only called when the connection has room in its send queue, and `budget`
-    /// is exactly that room. This is how backpressure is applied to reactor-driven work:
-    /// when the connection cannot write, the reactor is not polled for outbound messages,
-    /// and any streams or futures the reactor drives to produce them are not advanced.
-    /// If your source of messages models lag or load-shedding (like
-    /// `tokio::sync::broadcast`), a slow or stalled peer causes that model to engage
-    /// instead of buffering without bound.
+    /// This is only called when the connection has room to send, and `outbound` refuses
+    /// messages beyond that room. When the connection cannot write, work that produces
+    /// messages is not advanced. If your message source models lag (like
+    /// `tokio::sync::broadcast`), a slow peer engages that model instead of buffering
+    /// without bound.
     ///
-    /// Messages delivered through `sink` pass through `on_outbound_message` before
-    /// serialization, exactly like messages from the outbound queue: every outbound
-    /// message is observed by that hook, whichever source produced it.
+    /// Messages you emit here are yours: do any bookkeeping before you send them.
     ///
-    /// A connection has two outbound sources: its outbound message queue and its reactor.
-    /// It closes when both are exhausted - the queue's senders are all dropped and this
-    /// returns `Poll::Ready(None)`. The default implementation says this reactor never
-    /// produces messages of its own, which leaves the connection's lifetime governed by
-    /// the outbound queue, as before this method existed. Return `Poll::Pending` when
-    /// nothing is available right now (registering wakers), and `Poll::Ready(Some(()))`
-    /// after emitting one or more messages.
+    /// Return `Ready(Some(()))` after emitting, `Pending` when nothing is available
+    /// right now, and `Ready(None)` if you will never emit - the default. The connection
+    /// closes when its outbound queue is closed and this returns `Ready(None)`.
     fn poll_outbound_many(
         self: std::pin::Pin<&mut Self>,
         _context: &mut std::task::Context<'_>,
-        _sink: &mut impl FnMut(Self::LogicalOutbound),
-        _budget: usize,
+        _outbound: &mut impl SendBudget<Self::Outbound>,
     ) -> std::task::Poll<Option<()>> {
         std::task::Poll::Ready(None)
     }
+}
+
+/// A bounded lease on a connection's send capacity.
+pub trait SendBudget<T> {
+    /// Take a permit to send one message. None when the budget is spent.
+    /// Dropping a permit unused returns its capacity.
+    fn reserve(&mut self) -> Option<impl SendPermit<T> + '_>;
+
+    /// Reserve up to `count` sends. The permit reports how many it actually holds -
+    /// possibly zero, possibly fewer than requested. Unspent sends return to the
+    /// budget when the permit drops.
+    fn reserve_many(&mut self, count: usize) -> impl SendManyPermit<T> + '_;
+}
+
+/// A reserved slot in a connection's send queue.
+pub trait SendPermit<T> {
+    /// Spend the permit.
+    fn send(self, message: T);
+}
+
+/// A reserved run of slots in a connection's send queue.
+pub trait SendManyPermit<T> {
+    /// How many sends this permit holds.
+    fn reserved(&self) -> usize;
+
+    /// Spend one of the reserved sends.
+    ///
+    /// Sending more than `reserved` messages panics, like indexing out of bounds:
+    /// check `reserved` and send at most that many.
+    fn send(&mut self, message: T);
 }
 
 /// What the connection should do after processing a batch of inbound messages.

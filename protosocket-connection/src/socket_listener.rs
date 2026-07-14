@@ -187,7 +187,7 @@ impl SocketListener for TlsSocketListener {
                     continue;
                 }
                 Poll::Ready(SocketResult::Disconnect) => {
-                    return Poll::Ready(SocketResult::Disconnect)
+                    return Poll::Ready(SocketResult::Disconnect);
                 }
                 Poll::Pending => break,
             }

@@ -1,12 +1,11 @@
 use std::{
-    collections::VecDeque,
-    pin::Pin,
+    pin::{Pin, pin},
     task::{Context, Poll},
 };
 
 use futures::stream::{FuturesUnordered, StreamFuture};
 use futures::{Stream, StreamExt};
-use protosocket::MessageReactor;
+use protosocket::{MessageReactor, SendManyPermit, SendPermit};
 
 use crate::{
     Message, ProtosocketControlCode,
@@ -20,15 +19,17 @@ type PooledRpc<TConnectionService> = RpcStream<
     <TConnectionService as ConnectionService>::StreamType,
 >;
 
-/// A MessageReactor that hosts a ConnectionService's rpcs and drives them within the
-/// connection's send budget.
+/// A MessageReactor that hosts a ConnectionService's rpcs.
 ///
-/// New rpcs are registered from inbound messages. Their completions - unary and streaming
-/// alike - live in one pool and are only advanced by `poll_outbound_many`, which the
-/// connection calls only when it has room to send. This is the backpressure contract: a
-/// connection that cannot write does not advance the work that produces responses. The
-/// pool yields in readiness order; no priority between unary and streaming rpcs is
-/// imposed, and a ready rpc is drained while it is hot, up to the send budget.
+/// New rpcs are registered from inbound messages. Their completions live in a pool and
+/// are advanced by `poll_outbound_many`. The connection only polls outbound when it
+/// has room to send. If you spawn your rpc's, you'll probably also want to limit concurrent
+/// rpcs, or you'll only get one-sided backpressure.
+/// A connection that cannot write does not advance the response futures.
+///
+/// Rpc messages are sent in readiness order. There is no ordering across rpcs, however
+/// streaming rpcs still get relative ordering for their own messages. You'll receive streams
+/// in the order they were yielded by your rpc.
 pub struct RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
@@ -37,7 +38,7 @@ where
     aborts: AbortionTracker,
     /// Message ids of rpcs to reject. Small and self-limiting: bounded by the inbound
     /// messages processed between sends.
-    rejections: VecDeque<u64>,
+    rejections: Vec<u64>,
     rpcs: FuturesUnordered<StreamFuture<PooledRpc<TConnectionService>>>,
 }
 
@@ -67,8 +68,6 @@ where
         }
     }
 
-    /// Turn an rpc event into the message that goes on the wire, retiring the rpc's
-    /// cancellation bookkeeping on terminal events.
     fn message_for_event(
         &mut self,
         id: u64,
@@ -120,7 +119,7 @@ where
                 }
                 RpcKind::Cancelled => {
                     log::debug!("rejecting rpc {message_id}");
-                    self.rejections.push_back(message_id);
+                    self.rejections.push(message_id);
                 }
             },
             ProtosocketControlCode::Cancel => {
@@ -151,59 +150,56 @@ where
         structurally_pinned_connection_server.poll(context)
     }
 
-    /// Produce responses in rpc readiness order, draining each ready rpc while it is
-    /// hot to amortize pool re-insertion. This is only called when the connection can
-    /// accept messages for serialization, and `budget` is exactly the room it has, so
-    /// rpc work only advances when its output has somewhere to go.
+    /// Produce responses in rpc readiness order. Ready rpcs are drained in runs to
+    /// amortize pool re-insertion; an rpc that exhausts the budget goes to the back.
     fn poll_outbound_many(
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
-        sink: &mut impl FnMut(Self::LogicalOutbound),
-        budget: usize,
+        outbound: &mut impl protosocket::SendBudget<Self::Outbound>,
     ) -> Poll<Option<()>> {
         let me = self.get_mut();
-        let mut produced = 0;
-        while produced < budget {
-            if let Some(message_id) = me.rejections.pop_front() {
-                sink(<Self::Outbound as Message>::cancelled(message_id));
+        let mut produced = 0usize;
+        if !me.rejections.is_empty() {
+            let mut permits = outbound.reserve_many(me.rejections.len());
+            for message_id in me.rejections.drain(..permits.reserved()) {
+                permits.send(<Self::Outbound as Message>::cancelled(message_id));
                 produced += 1;
-                continue;
             }
-            match Pin::new(&mut me.rpcs).poll_next(context) {
+        }
+        loop {
+            let Some(permit) = outbound.reserve() else {
+                break;
+            };
+            match pin!(&mut me.rpcs).poll_next(context) {
                 Poll::Ready(Some((first, mut rpc))) => {
                     let Some((id, event)) = first else {
-                        // The rpc's terminal event was already delivered; retire it and
-                        // look at the next ready rpc.
+                        // StreamFuture yielded None: this rpc's stream was already
+                        // exhausted, and there's no more work to do for it.
                         continue;
                     };
                     let terminal = !matches!(event, RpcStreamEvent::Item(_));
-                    sink(me.message_for_event(id, event));
+                    permit.send(me.message_for_event(id, event));
                     produced += 1;
                     if terminal {
                         continue;
                     }
-                    // Drain this rpc while it is hot, so a busy stream doesn't pay a
-                    // pool re-insertion per message. Fairness across rpcs is round-robin
-                    // per pool visit: an rpc that exhausts the budget goes to the back.
-                    let mut retired = false;
-                    while produced < budget {
-                        match Pin::new(&mut rpc).poll_next(context) {
+                    let retired = loop {
+                        let Some(permit) = outbound.reserve() else {
+                            break false;
+                        };
+                        match pin!(&mut rpc).poll_next(context) {
                             Poll::Ready(Some((id, event))) => {
                                 let terminal = !matches!(event, RpcStreamEvent::Item(_));
-                                sink(me.message_for_event(id, event));
+                                permit.send(me.message_for_event(id, event));
                                 produced += 1;
                                 if terminal {
-                                    retired = true;
-                                    break;
+                                    break true;
                                 }
                             }
-                            Poll::Ready(None) => {
-                                retired = true;
-                                break;
-                            }
-                            Poll::Pending => break,
+                            Poll::Ready(None) => break true,
+                            Poll::Pending => break false,
                         }
-                    }
+                    };
                     if !retired {
                         me.rpcs.push(rpc.into_future());
                     }

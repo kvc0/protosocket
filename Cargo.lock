@@ -494,6 +494,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-proto-spawn"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "futures",
+ "histogram",
+ "log",
+ "prost",
+ "protosocket",
+ "protosocket-prost",
+ "protosocket-rpc",
+ "tokio",
+]
+
+[[package]]
 name = "example-proto-stream"
 version = "0.1.0"
 dependencies = [
