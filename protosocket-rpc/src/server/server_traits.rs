@@ -39,31 +39,22 @@ pub trait SocketService: 'static {
     ) -> Self::ConnectionService;
 }
 
-/// A connection service receives rpcs from clients and returns the work that produces responses.
+/// A connection service receives rpcs from clients and returns the work that produces
+/// responses.
 ///
-/// Each client connection gets a ConnectionService. You put your per-connection state in your
-/// ConnectionService implementation.
+/// Each client connection gets a ConnectionService; put your per-connection state here.
+/// You are called with each initiating message, and you return the rpc that completes it:
+/// a future for a unary rpc, or a stream for a streaming rpc.
 ///
-/// Every interaction with a client is done via an RPC. You are called with the initiating message
-/// from the client, and you return the kind of rpc that completes it: a future for a unary rpc,
-/// or a stream for a streaming rpc.
-///
-/// Your futures and streams are driven by the connection itself, and they are only polled when
-/// the connection has room to send responses. This is how backpressure works: when the peer
-/// stops receiving, your rpcs stop being polled. If your stream models lag or load-shedding
-/// (like `tokio::sync::broadcast`), a slow peer causes that model to engage instead of buffering
+/// The connection drives your rpcs, and only polls them when it has room to send. A peer
+/// that stops receiving stops its rpcs. If your stream models lag (like
+/// `tokio::sync::broadcast`), a slow peer engages that model instead of buffering
 /// responses without bound.
 ///
-/// Because rpcs are polled in the context of the connection, a connection and all of its
-/// outstanding rpcs advance on 1 cpu at a time. That might be good for your use case, or it
-/// might be suboptimal. If an rpc is compute-heavy, you can of course spawn a task and return
-/// a future that completes when the task completes, e.g., with a `tokio::sync::oneshot`. In
-/// general, try to do as little as possible: Return a future and let the connection poll it.
-/// This keeps your task count low and your wakes more tightly related to the cooperating
-/// tasks that need to be woken.
+/// Rpcs are polled in the connection's task. If an rpc is compute-heavy, you can spawn
+/// it and return a completion future or a channel-backed stream.
 ///
-/// Response message ids are stamped by the connection: every response or stream item is sent
-/// with the message id of the rpc that initiated it.
+/// Response message ids are stamped by the connection.
 pub trait ConnectionService: Unpin + 'static {
     /// The type of request message, These messages initiate rpcs.
     type Request: Message;

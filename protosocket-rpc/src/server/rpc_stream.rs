@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    pin::Pin,
+    pin::{pin, Pin},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -15,7 +15,7 @@ use futures::{task::AtomicWaker, Stream};
 /// A unary rpc is a stream that yields exactly one terminal `Complete` event. A streaming
 /// rpc yields `Item` events until the underlying stream finishes with a terminal `Finished`.
 /// Cancellation yields a terminal `Cancelled` from either kind. After a terminal event the
-/// stream returns `None`, so a `SelectAll` retires it.
+/// stream yields `None`.
 #[derive(Debug)]
 pub struct RpcStream<F, S> {
     id: u64,
@@ -89,14 +89,14 @@ where
             };
         }
         match &mut self.kind {
-            RpcStreamKind::Unary(completion) => match Pin::new(completion).poll(context) {
+            RpcStreamKind::Unary(completion) => match pin!(completion).poll(context) {
                 Poll::Ready(response) => {
                     self.kind = RpcStreamKind::Done;
                     Poll::Ready(Some((id, RpcStreamEvent::Complete(response))))
                 }
                 Poll::Pending => Poll::Pending,
             },
-            RpcStreamKind::Streaming(stream) => match Pin::new(stream).poll_next(context) {
+            RpcStreamKind::Streaming(stream) => match pin!(stream).poll_next(context) {
                 Poll::Ready(Some(item)) => Poll::Ready(Some((id, RpcStreamEvent::Item(item)))),
                 Poll::Ready(None) => {
                     self.kind = RpcStreamKind::Done;
@@ -118,6 +118,9 @@ pub struct RpcAbortHandle {
 
 impl RpcAbortHandle {
     /// Mark the rpc aborted and wake it so the cancellation is observed.
+    ///
+    /// This races with normal rpc completion. If an rpc has already completed
+    /// by the time it observes cancel, it doesn't also cancel itself.
     pub fn mark_aborted(self) {
         self.aborted.store(true, Ordering::Relaxed);
         self.waker.wake();
