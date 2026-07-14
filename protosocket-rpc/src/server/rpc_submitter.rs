@@ -15,12 +15,6 @@ use crate::{
 
 use super::rpc_stream::{RpcStream, RpcStreamEvent};
 
-/// How many messages to take from one rpc before returning it to the pool. Re-inserting
-/// a stream into the pool costs a node cycle per visit, so hot streams are drained in
-/// small batches to amortize it. This bounds both the staging queue and how far one rpc
-/// can burst ahead of its peers within a send budget.
-const PER_RPC_BATCH: usize = 64;
-
 type PooledRpc<TConnectionService> = RpcStream<
     <TConnectionService as ConnectionService>::UnaryFutureType,
     <TConnectionService as ConnectionService>::StreamType,
@@ -30,11 +24,11 @@ type PooledRpc<TConnectionService> = RpcStream<
 /// connection's send budget.
 ///
 /// New rpcs are registered from inbound messages. Their completions - unary and streaming
-/// alike - live in one pool and are only advanced by `poll_next_outbound`, which the
+/// alike - live in one pool and are only advanced by `poll_outbound_many`, which the
 /// connection calls only when it has room to send. This is the backpressure contract: a
 /// connection that cannot write does not advance the work that produces responses. The
 /// pool yields in readiness order; no priority between unary and streaming rpcs is
-/// imposed, and a ready rpc yields at most `PER_RPC_BATCH` messages per pool visit.
+/// imposed, and a ready rpc is drained while it is hot, up to the send budget.
 pub struct RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
@@ -45,9 +39,6 @@ where
     /// messages processed between sends.
     rejections: VecDeque<u64>,
     rpcs: FuturesUnordered<StreamFuture<PooledRpc<TConnectionService>>>,
-    /// Messages already claimed from a batched rpc, awaiting hand-off to the connection.
-    /// Bounded by `PER_RPC_BATCH`.
-    staged: VecDeque<TConnectionService::Response>,
 }
 
 impl<TConnectionService> std::fmt::Debug for RpcSubmitter<TConnectionService>
@@ -59,7 +50,6 @@ where
             .field("aborts", &self.aborts)
             .field("rejections", &self.rejections.len())
             .field("rpcs", &self.rpcs.len())
-            .field("staged", &self.staged.len())
             .finish()
     }
 }
@@ -74,7 +64,6 @@ where
             aborts: Default::default(),
             rejections: Default::default(),
             rpcs: Default::default(),
-            staged: Default::default(),
         }
     }
 
@@ -162,21 +151,24 @@ where
         structurally_pinned_connection_server.poll(context)
     }
 
-    /// Produce the next response, in rpc readiness order. This is only called when the
-    /// connection can accept a message for serialization, so rpc work only advances when
-    /// its output has somewhere to go.
-    fn poll_next_outbound(
+    /// Produce responses in rpc readiness order, draining each ready rpc while it is
+    /// hot to amortize pool re-insertion. This is only called when the connection can
+    /// accept messages for serialization, and `budget` is exactly the room it has, so
+    /// rpc work only advances when its output has somewhere to go.
+    fn poll_outbound_many(
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
-    ) -> Poll<Option<Self::LogicalOutbound>> {
+        sink: &mut impl FnMut(Self::LogicalOutbound),
+        budget: usize,
+    ) -> Poll<Option<()>> {
         let me = self.get_mut();
-        if let Some(staged) = me.staged.pop_front() {
-            return Poll::Ready(Some(staged));
-        }
-        if let Some(message_id) = me.rejections.pop_front() {
-            return Poll::Ready(Some(<Self::Outbound as Message>::cancelled(message_id)));
-        }
-        loop {
+        let mut produced = 0;
+        while produced < budget {
+            if let Some(message_id) = me.rejections.pop_front() {
+                sink(<Self::Outbound as Message>::cancelled(message_id));
+                produced += 1;
+                continue;
+            }
             match Pin::new(&mut me.rpcs).poll_next(context) {
                 Poll::Ready(Some((first, mut rpc))) => {
                     let Some((id, event)) = first else {
@@ -185,40 +177,46 @@ where
                         continue;
                     };
                     let terminal = !matches!(event, RpcStreamEvent::Item(_));
-                    let first = me.message_for_event(id, event);
+                    sink(me.message_for_event(id, event));
+                    produced += 1;
                     if terminal {
-                        return Poll::Ready(Some(first));
+                        continue;
                     }
-                    // Drain a small batch from this rpc while it is hot, so a busy stream
-                    // doesn't pay a pool re-insertion per message.
-                    let mut exhausted = false;
-                    while me.staged.len() < PER_RPC_BATCH - 1 {
+                    // Drain this rpc while it is hot, so a busy stream doesn't pay a
+                    // pool re-insertion per message. Fairness across rpcs is round-robin
+                    // per pool visit: an rpc that exhausts the budget goes to the back.
+                    let mut retired = false;
+                    while produced < budget {
                         match Pin::new(&mut rpc).poll_next(context) {
                             Poll::Ready(Some((id, event))) => {
                                 let terminal = !matches!(event, RpcStreamEvent::Item(_));
-                                let message = me.message_for_event(id, event);
-                                me.staged.push_back(message);
+                                sink(me.message_for_event(id, event));
+                                produced += 1;
                                 if terminal {
-                                    exhausted = true;
+                                    retired = true;
                                     break;
                                 }
                             }
                             Poll::Ready(None) => {
-                                exhausted = true;
+                                retired = true;
                                 break;
                             }
                             Poll::Pending => break,
                         }
                     }
-                    if !exhausted {
+                    if !retired {
                         me.rpcs.push(rpc.into_future());
                     }
-                    return Poll::Ready(Some(first));
                 }
-                // An empty pool is not a closed reactor: new rpcs arrive from inbound
+                // An empty pool is not a finished reactor: new rpcs arrive from inbound
                 // processing, which wakes this connection on its own.
-                Poll::Ready(None) | Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) | Poll::Pending => break,
             }
+        }
+        if 0 < produced {
+            Poll::Ready(Some(()))
+        } else {
+            Poll::Pending
         }
     }
 }

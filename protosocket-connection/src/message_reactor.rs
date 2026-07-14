@@ -38,25 +38,34 @@ pub trait MessageReactor: 'static {
     /// You can use this to track outbound messages, or for logging, or metrics, or whatever.
     fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound;
 
-    /// Poll for the next outbound message produced by the reactor itself.
+    /// Produce outbound messages from the reactor itself, up to `budget` of them,
+    /// delivered through `sink`.
     ///
-    /// This is only called when the connection has room in its send queue. This is how
-    /// backpressure is applied to reactor-driven work: when the connection cannot write,
-    /// the reactor is not polled for outbound messages, and any streams or futures the
-    /// reactor drives to produce them are not advanced. If your source of messages models
-    /// lag or load-shedding (like `tokio::sync::broadcast`), a slow or stalled peer causes
-    /// that model to engage instead of buffering without bound.
+    /// This is only called when the connection has room in its send queue, and `budget`
+    /// is exactly that room. This is how backpressure is applied to reactor-driven work:
+    /// when the connection cannot write, the reactor is not polled for outbound messages,
+    /// and any streams or futures the reactor drives to produce them are not advanced.
+    /// If your source of messages models lag or load-shedding (like
+    /// `tokio::sync::broadcast`), a slow or stalled peer causes that model to engage
+    /// instead of buffering without bound.
+    ///
+    /// Messages delivered through `sink` pass through `on_outbound_message` before
+    /// serialization, exactly like messages from the outbound queue: every outbound
+    /// message is observed by that hook, whichever source produced it.
     ///
     /// A connection has two outbound sources: its outbound message queue and its reactor.
     /// It closes when both are exhausted - the queue's senders are all dropped and this
     /// returns `Poll::Ready(None)`. The default implementation says this reactor never
     /// produces messages of its own, which leaves the connection's lifetime governed by
-    /// the outbound queue, as before this method existed. Return `Poll::Pending` while
-    /// you might produce messages later.
-    fn poll_next_outbound(
+    /// the outbound queue, as before this method existed. Return `Poll::Pending` when
+    /// nothing is available right now (registering wakers), and `Poll::Ready(Some(()))`
+    /// after emitting one or more messages.
+    fn poll_outbound_many(
         self: std::pin::Pin<&mut Self>,
         _context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::LogicalOutbound>> {
+        _sink: &mut impl FnMut(Self::LogicalOutbound),
+        _budget: usize,
+    ) -> std::task::Poll<Option<()>> {
         std::task::Poll::Ready(None)
     }
 }

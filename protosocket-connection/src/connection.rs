@@ -37,6 +37,9 @@ pub struct Connection<
 > {
     stream: TStream,
     outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
+    /// Reusable landing area for reactor-produced messages, drained through
+    /// `on_outbound_message` and the codec each poll. Bounded by the send budget.
+    reactor_outbound_scratch: VecDeque<TReactor::LogicalOutbound>,
     send_buffer: VecDeque<<TCodec as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
@@ -183,6 +186,7 @@ impl<
         Self {
             stream,
             outbound_messages,
+            reactor_outbound_scratch: Default::default(),
             send_buffer: Default::default(),
             receive_buffer: Vec::new(),
             max_buffer_length,
@@ -333,49 +337,60 @@ impl<
             return Poll::Pending;
         }
 
+        // The connection has two outbound sources: the queued outbound messages and the
+        // reactor's own message production (e.g., streaming rpcs). Both are only polled
+        // here, within the send budget, so a connection that cannot write does not
+        // advance the work that produces messages. The connection closes when both
+        // sources are exhausted: the queue's senders are all dropped and the reactor is
+        // finished.
         let start_len = self.send_buffer.len();
-        for _ in 0..max_outbound {
-            // The connection has two outbound sources: the queued outbound messages and
-            // the reactor's own message production (e.g., streaming rpcs). The reactor is
-            // only polled here, within the send budget, so a connection that cannot write
-            // does not advance the work that produces messages. The connection closes
-            // when both sources are exhausted: the queue's senders are all dropped and
-            // the reactor is finished.
-            let queue = self.outbound_messages.poll_next(context);
-            let message = match queue {
-                Poll::Ready(Some(next)) => next,
-                Poll::Pending | Poll::Ready(None) => {
-                    // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
-                    match unsafe { Pin::new_unchecked(&mut self.reactor) }
-                        .poll_next_outbound(context)
-                    {
-                        Poll::Ready(Some(next)) => next,
-                        Poll::Pending => {
-                            log::debug!(
-                                "no more messages to serialize, and we are pending for more"
-                            );
-                            break;
-                        }
-                        Poll::Ready(None) => {
-                            if matches!(queue, Poll::Ready(None)) {
-                                log::info!("all outbound message sources are exhausted");
-                                return Poll::Ready(());
-                            }
-                            // The reactor never produces messages; the live outbound
-                            // queue governs this connection's lifetime.
-                            break;
-                        }
-                    }
+        let mut queue_closed = false;
+        while self.send_buffer.len() - start_len < max_outbound {
+            match self.outbound_messages.poll_next(context) {
+                Poll::Ready(Some(message)) => {
+                    let message = self.reactor.on_outbound_message(message);
+                    let buffer = self.codec.encode(message);
+                    log::trace!(
+                        "serialized message and enqueueing outbound buffer: {}b",
+                        buffer.remaining()
+                    );
+                    // queue up a writev
+                    self.send_buffer.push_back(buffer);
                 }
+                Poll::Ready(None) => {
+                    queue_closed = true;
+                    break;
+                }
+                Poll::Pending => break,
+            }
+        }
+
+        let remaining = max_outbound - (self.send_buffer.len() - start_len);
+        if 0 < remaining {
+            let scratch = &mut self.reactor_outbound_scratch;
+            debug_assert!(scratch.is_empty(), "scratch is always drained after use");
+            let mut sink = |message: TReactor::LogicalOutbound| {
+                scratch.push_back(message);
             };
-            let message = self.reactor.on_outbound_message(message);
-            let buffer = self.codec.encode(message);
-            log::trace!(
-                "serialized message and enqueueing outbound buffer: {}b",
-                buffer.remaining()
-            );
-            // queue up a writev
-            self.send_buffer.push_back(buffer);
+            // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
+            let reactor_state = unsafe { Pin::new_unchecked(&mut self.reactor) }
+                .poll_outbound_many(context, &mut sink, remaining);
+            // Reactor-produced messages get the same treatment as queued messages:
+            // through on_outbound_message, then the codec.
+            while let Some(message) = self.reactor_outbound_scratch.pop_front() {
+                let message = self.reactor.on_outbound_message(message);
+                let buffer = self.codec.encode(message);
+                log::trace!("serialized reactor message: {}b", buffer.remaining());
+                self.send_buffer.push_back(buffer);
+            }
+            if let Poll::Ready(None) = reactor_state {
+                if queue_closed {
+                    log::info!("all outbound message sources are exhausted");
+                    return Poll::Ready(());
+                }
+                // The reactor never produces messages; the live outbound queue
+                // governs this connection's lifetime.
+            }
         }
         let new_len = self.send_buffer.len();
         if start_len != new_len {
