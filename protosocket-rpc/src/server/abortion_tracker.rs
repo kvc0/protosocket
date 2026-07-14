@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use crate::server::abortable::IdentifiableAbortHandle;
+use crate::server::rpc_stream::RpcAbortHandle;
 
 #[derive(Default)]
 pub struct AbortionTracker {
-    aborts: HashMap<u64, IdentifiableAbortHandle, ahash::RandomState>,
+    aborts: HashMap<u64, RpcAbortHandle, ahash::RandomState>,
 }
 
 impl std::fmt::Debug for AbortionTracker {
@@ -16,15 +16,11 @@ impl std::fmt::Debug for AbortionTracker {
 }
 
 impl AbortionTracker {
-    pub fn register(
-        &mut self,
-        id: u64,
-        handle: IdentifiableAbortHandle,
-    ) -> Option<IdentifiableAbortHandle> {
+    pub fn register(&mut self, id: u64, handle: RpcAbortHandle) -> Option<RpcAbortHandle> {
         self.aborts.insert(id, handle)
     }
 
-    pub fn take_abort(&mut self, id: u64) -> Option<IdentifiableAbortHandle> {
+    pub fn take_abort(&mut self, id: u64) -> Option<RpcAbortHandle> {
         self.aborts.remove(&id)
     }
 }

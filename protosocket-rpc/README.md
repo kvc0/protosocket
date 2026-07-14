@@ -49,30 +49,35 @@ bytes you encode are the bytes which are sent.
 ## A diagram
 Each RPC is its own interaction: You can have thousands of concurrent RPCs on a single
 connection, all streaming, completing, or cancelling as each wants to.
-```
+Servers return their rpc completions from `new_rpc` - a future for unary, a stream for
+streaming - and the connection drives them. Completions are only polled when the
+connection has room to send, so a peer that stops receiving stops its rpcs instead of
+buffering responses without bound.
+
+```text
 Client                      wire                      Server
 
 RpcClient                                         SocketRpcServer
     │                                                    │
     │                   UNARY                            │
     │                                                    │
-    ├── send_unary(req) ──── request (id=N) ────────────▶│ new_rpc(req, responder)
+    ├── send_unary(req) ──── request (id=N) ────────────▶│ new_rpc(req) -> RpcKind::Unary(future)
     │                                                    │      │
-    │   UnaryCompletion ◀─── response (id=N) ────────────┤   responder.unary(future)
-    │   .await                                           │   (you get the response)
+    │   UnaryCompletion ◀─── response (id=N) ────────────┤   (the connection polls your future)
+    │   .await                                           │
     │                                                    │
     │                  STREAMING                         │
     │                                                    │
-    ├── send_streaming(req) ─ request (id=M) ───────────▶│ new_rpc(req, responder)
+    ├── send_streaming(req) ─ request (id=M) ───────────▶│ new_rpc(req) -> RpcKind::Streaming(stream)
     │                                                    │      │
-    │   StreamingCompletion ◀ response (id=M) ───────────┤   responder.stream(stream)
+    │   StreamingCompletion ◀ response (id=M) ───────────┤   (the connection polls your stream)
     │   .next().await     ◀── response (id=M) ───────────┤   (you get the next message for response M)
     │   .next().await     ◀── End (id=M) ────────────────┤   (stream ended)
     │                                                    │
     │                 CANCELLATION                       │
     │                                                    │
-    ├── send_unary(req) ──── request (id=L) ────────────▶│ new_rpc(req, responder)
+    ├── send_unary(req) ──── request (id=L) ────────────▶│ new_rpc(req) -> RpcKind::Unary(future)
     │                                                    │      │
-    ├── drop(completion) ──── Cancel (id) ──────────────▶│   (task aborted)
+    ├── drop(completion) ──── Cancel (id) ──────────────▶│   (rpc aborted)
 ```
 

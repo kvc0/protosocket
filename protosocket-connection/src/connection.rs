@@ -61,7 +61,10 @@ impl<
         let read_capacity = self.receive_buffer.len();
         let write_queue = self.send_buffer.len();
         let write_length: usize = self.send_buffer.iter().map(|b| b.remaining()).sum();
-        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}} }}")
+        write!(
+            f,
+            "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}} }}"
+        )
     }
 }
 
@@ -240,7 +243,11 @@ impl<
                 Err(e) => match e {
                     DeserializeError::IncompleteBuffer { next_message_size } => {
                         if self.max_buffer_length < next_message_size {
-                            log::error!("tried to receive message that is too long. Resetting connection - max: {}, requested: {}", self.max_buffer_length, next_message_size);
+                            log::error!(
+                                "tried to receive message that is too long. Resetting connection - max: {}, requested: {}",
+                                self.max_buffer_length,
+                                next_message_size
+                            );
                             return ReadBufferState::Disconnected;
                         }
                         log::debug!("waiting for the next message of length {next_message_size}");
@@ -252,7 +259,10 @@ impl<
                     }
                     DeserializeError::SkipMessage { distance } => {
                         if self.receive_buffer_unread_index - buffer_cursor < distance {
-                            log::trace!("cannot skip yet, need to read more. Skipping: {distance}, remaining:{}", self.receive_buffer_unread_index - buffer_cursor);
+                            log::trace!(
+                                "cannot skip yet, need to read more. Skipping: {distance}, remaining:{}",
+                                self.receive_buffer_unread_index - buffer_cursor
+                            );
                             break ReadBufferState::Pending;
                         }
                         log::debug!("skipping message of length {distance}");
@@ -327,8 +337,25 @@ impl<
         for _ in 0..max_outbound {
             let message = match self.outbound_messages.poll_next(context) {
                 Poll::Pending => {
-                    log::debug!("no more messages to serialize, and we are pending for more");
-                    break;
+                    // The queue is drained; the reactor may drive its own message sources
+                    // (e.g., streaming rpcs). It is only polled here, within the send
+                    // budget, so a connection that cannot write does not advance them.
+                    // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
+                    match unsafe { Pin::new_unchecked(&mut self.reactor) }
+                        .poll_next_outbound(context)
+                    {
+                        Poll::Pending => {
+                            log::debug!(
+                                "no more messages to serialize, and we are pending for more"
+                            );
+                            break;
+                        }
+                        Poll::Ready(None) => {
+                            log::info!("reactor is finished producing messages");
+                            return Poll::Ready(());
+                        }
+                        Poll::Ready(Some(next)) => next,
+                    }
                 }
                 Poll::Ready(None) => {
                     log::info!("outbound message channel was closed");
@@ -450,7 +477,9 @@ impl<
                 } else {
                     // Walk the buffer forward. It needs to be the next bytes on the wire, so we'll put it back in front.
                     // Partial buffer consumption is relatively uncommon, but it definitely happens.
-                    log::debug!("after writing {total_written}b, advancing partially written buffer of {remaining}b by {written}b");
+                    log::debug!(
+                        "after writing {total_written}b, advancing partially written buffer of {remaining}b by {written}b"
+                    );
                     front.advance(written);
                     self.send_buffer.push_front(front);
                     break;

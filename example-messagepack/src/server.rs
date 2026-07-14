@@ -1,11 +1,11 @@
 use std::sync::atomic::AtomicUsize;
 
-use futures::Stream;
+use futures::{stream::BoxStream, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_rpc::{
-    server::{ConnectionService, RpcResponder, SocketService},
-    Message, ProtosocketControlCode,
+    server::{ConnectionService, RpcKind, SocketService},
+    ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
 
@@ -84,30 +84,28 @@ struct DemoRpcConnectionServer {
 impl ConnectionService for DemoRpcConnectionServer {
     type Request = Request;
     type Response = Response;
+    type UnaryFutureType = futures::future::Ready<Response>;
+    type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-        responder: RpcResponder<'_, Self::Response>,
-    ) {
+    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
         let behavior = initiating_message.response_behavior;
         match initiating_message.body {
             Some(echo) => match behavior {
                 ResponseBehavior::Unary => {
-                    responder.immediate(echo_request(request_id, echo));
+                    RpcKind::Unary(futures::future::ready(echo_request(request_id, echo)))
                 }
                 ResponseBehavior::Stream => {
-                    tokio::spawn(responder.stream(echo_stream(request_id, echo)));
+                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
                 }
             },
             None => {
-                // No completion messages will be sent for this message
-                log::warn!(
-                    "{request_id} no request in rpc body. This may cause a client memory leak."
-                );
-                responder.immediate(Response::cancelled(request_id));
+                log::warn!("{request_id} no request in rpc body");
+                RpcKind::Cancelled
             }
         }
     }

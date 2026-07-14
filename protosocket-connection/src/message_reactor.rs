@@ -37,6 +37,26 @@ pub trait MessageReactor: 'static {
     ///
     /// You can use this to track outbound messages, or for logging, or metrics, or whatever.
     fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound;
+
+    /// Poll for the next outbound message produced by the reactor itself.
+    ///
+    /// This is only called when the connection has room in its send queue. This is how
+    /// backpressure is applied to reactor-driven work: when the connection cannot write,
+    /// the reactor is not polled for outbound messages, and any streams or futures the
+    /// reactor drives to produce them are not advanced. If your source of messages models
+    /// lag or load-shedding (like `tokio::sync::broadcast`), a slow or stalled peer causes
+    /// that model to engage instead of buffering without bound.
+    ///
+    /// Return `Poll::Ready(None)` to tell the connection the reactor is finished producing
+    /// messages and the connection should close. If your reactor does not produce messages
+    /// on its own (for example, a client whose outbound messages are all submitted through
+    /// the connection's outbound queue), leave the default implementation.
+    fn poll_next_outbound(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::LogicalOutbound>> {
+        std::task::Poll::Pending
+    }
 }
 
 /// What the connection should do after processing a batch of inbound messages.

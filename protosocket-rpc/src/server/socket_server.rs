@@ -11,7 +11,7 @@ use std::task::Poll;
 use crate::server::Spawn;
 
 use super::rpc_submitter::RpcSubmitter;
-use super::server_traits::SocketService;
+use super::server_traits::{ConnectionService, SocketService};
 
 /// A `SocketRpcServer` is a server future. It listens on a socket and spawns new connections,
 /// with a ConnectionService to handle each connection.
@@ -52,6 +52,8 @@ where
     <TSocketService::Codec as Encoder>::Serialized: Send,
     <TSocketService::SocketListener as SocketListener>::Stream: Send,
     TSocketService::ConnectionService: Send,
+    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
+    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
 {
     /// Construct a new `SocketRpcServer` with a listener.
     ///
