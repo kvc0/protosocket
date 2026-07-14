@@ -20,9 +20,9 @@ pub trait SocketService: 'static {
 
     /// The type of connection service that will be created for each connection.
     type ConnectionService: ConnectionService<
-            Request = <Self::Codec as Decoder>::Message,
-            Response = <Self::Codec as Encoder>::Message,
-        >;
+        Request = <Self::Codec as Decoder>::Message,
+        Response = <Self::Codec as Encoder>::Message,
+    >;
 
     /// The listener type for this service. E.g., `TcpSocketListener`
     type SocketListener: SocketListener;

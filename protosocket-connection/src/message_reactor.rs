@@ -47,15 +47,17 @@ pub trait MessageReactor: 'static {
     /// lag or load-shedding (like `tokio::sync::broadcast`), a slow or stalled peer causes
     /// that model to engage instead of buffering without bound.
     ///
-    /// Return `Poll::Ready(None)` to tell the connection the reactor is finished producing
-    /// messages and the connection should close. If your reactor does not produce messages
-    /// on its own (for example, a client whose outbound messages are all submitted through
-    /// the connection's outbound queue), leave the default implementation.
+    /// A connection has two outbound sources: its outbound message queue and its reactor.
+    /// It closes when both are exhausted - the queue's senders are all dropped and this
+    /// returns `Poll::Ready(None)`. The default implementation says this reactor never
+    /// produces messages of its own, which leaves the connection's lifetime governed by
+    /// the outbound queue, as before this method existed. Return `Poll::Pending` while
+    /// you might produce messages later.
     fn poll_next_outbound(
         self: std::pin::Pin<&mut Self>,
         _context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::LogicalOutbound>> {
-        std::task::Poll::Pending
+        std::task::Poll::Ready(None)
     }
 }
 

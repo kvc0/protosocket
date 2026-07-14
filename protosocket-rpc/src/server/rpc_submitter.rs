@@ -28,9 +28,6 @@ where
     TConnectionService: ConnectionService,
 {
     connection_server: TConnectionService,
-    /// Holds the connection's outbound queue open. Rpc responses do not flow through the
-    /// queue; they are produced on demand by poll_next_outbound.
-    _outbound: spillway::Sender<TConnectionService::Response>,
     aborts: AbortionTracker,
     /// Message ids of rpcs to reject. Small and self-limiting: bounded by the inbound
     /// messages processed between sends.
@@ -55,13 +52,9 @@ impl<TConnectionService> RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
 {
-    pub fn new(
-        connection_server: TConnectionService,
-        outbound: spillway::Sender<TConnectionService::Response>,
-    ) -> Self {
+    pub fn new(connection_server: TConnectionService) -> Self {
         Self {
             connection_server,
-            _outbound: outbound,
             aborts: Default::default(),
             rejections: Default::default(),
             rpcs: Default::default(),

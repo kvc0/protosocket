@@ -142,8 +142,11 @@ where
                 Poll::Ready(result) => match result {
                     SocketResult::Stream(stream) => {
                         let connection_service = self.socket_server.new_stream_service(&stream);
-                        let (outbound_messages, outbound_messages_receiver) = spillway::channel();
-                        let submitter = RpcSubmitter::new(connection_service, outbound_messages);
+                        // The rpc server produces all responses through the submitter, so
+                        // the queue's senders are dropped immediately: the connection's
+                        // lifetime is governed by the socket and the submitter alone.
+                        let (_no_senders, outbound_messages_receiver) = spillway::channel();
+                        let submitter = RpcSubmitter::new(connection_service);
                         #[allow(clippy::type_complexity)]
                         let connection: Connection<
                             <TSocketService::SocketListener as SocketListener>::Stream,

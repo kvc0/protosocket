@@ -335,15 +335,21 @@ impl<
 
         let start_len = self.send_buffer.len();
         for _ in 0..max_outbound {
-            let message = match self.outbound_messages.poll_next(context) {
-                Poll::Pending => {
-                    // The queue is drained; the reactor may drive its own message sources
-                    // (e.g., streaming rpcs). It is only polled here, within the send
-                    // budget, so a connection that cannot write does not advance them.
+            // The connection has two outbound sources: the queued outbound messages and
+            // the reactor's own message production (e.g., streaming rpcs). The reactor is
+            // only polled here, within the send budget, so a connection that cannot write
+            // does not advance the work that produces messages. The connection closes
+            // when both sources are exhausted: the queue's senders are all dropped and
+            // the reactor is finished.
+            let queue = self.outbound_messages.poll_next(context);
+            let message = match queue {
+                Poll::Ready(Some(next)) => next,
+                Poll::Pending | Poll::Ready(None) => {
                     // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
                     match unsafe { Pin::new_unchecked(&mut self.reactor) }
                         .poll_next_outbound(context)
                     {
+                        Poll::Ready(Some(next)) => next,
                         Poll::Pending => {
                             log::debug!(
                                 "no more messages to serialize, and we are pending for more"
@@ -351,17 +357,16 @@ impl<
                             break;
                         }
                         Poll::Ready(None) => {
-                            log::info!("reactor is finished producing messages");
-                            return Poll::Ready(());
+                            if matches!(queue, Poll::Ready(None)) {
+                                log::info!("all outbound message sources are exhausted");
+                                return Poll::Ready(());
+                            }
+                            // The reactor never produces messages; the live outbound
+                            // queue governs this connection's lifetime.
+                            break;
                         }
-                        Poll::Ready(Some(next)) => next,
                     }
                 }
-                Poll::Ready(None) => {
-                    log::info!("outbound message channel was closed");
-                    return Poll::Ready(());
-                }
-                Poll::Ready(Some(next)) => next,
             };
             let message = self.reactor.on_outbound_message(message);
             let buffer = self.codec.encode(message);
