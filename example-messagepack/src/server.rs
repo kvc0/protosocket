@@ -58,11 +58,14 @@ impl SocketService for DemoRpcSocketService {
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;
 
-    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec {
+    fn codec(&mut self) -> <Self::ConnectionService as ConnectionService>::Codec {
         Default::default()
     }
 
-    fn new_stream_service(&self, stream: &StreamWithAddress<TcpStream>) -> Self::ConnectionService {
+    fn new_stream_service(
+        &mut self,
+        stream: &StreamWithAddress<TcpStream>,
+    ) -> Self::ConnectionService {
         log::info!("new connection server {}", stream.address());
         DemoRpcConnectionServer {
             address: stream.address(),

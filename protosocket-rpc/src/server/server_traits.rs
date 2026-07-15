@@ -18,13 +18,13 @@ pub trait SocketService: 'static {
     type SocketListener: SocketListener;
 
     /// Create a new message codec for a connection.
-    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec;
+    fn codec(&mut self) -> <Self::ConnectionService as ConnectionService>::Codec;
 
     /// Create a new ConnectionService for your new connection.
     /// The Stream will be wired into a `protosocket::Connection`. You can look at it in here
     /// if it has data you want (like a SocketAddr).
     fn new_stream_service(
-        &self,
+        &mut self,
         _stream: &<Self::SocketListener as SocketListener>::Stream,
     ) -> Self::ConnectionService;
 }

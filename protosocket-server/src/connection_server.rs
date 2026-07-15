@@ -21,12 +21,12 @@ pub trait ServerConnector: Unpin {
     type SocketListener: SocketListener;
 
     /// Create a new message codec for a connection
-    fn codec(&self) -> Self::Codec;
+    fn codec(&mut self) -> Self::Codec;
 
     /// Create a per-connection message Reactor.
     /// You can look at the connection in here if you need some data, like a SocketAddr
     fn new_reactor(
-        &self,
+        &mut self,
         optional_outbound: spillway::Sender<<Self::Reactor as MessageReactor>::LogicalOutbound>,
         _connection: &<Self::SocketListener as SocketListener>::Stream,
     ) -> Self::Reactor;

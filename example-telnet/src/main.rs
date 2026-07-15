@@ -35,12 +35,12 @@ impl ServerConnector for ServerContext {
     type Codec = StringCodec;
     type Reactor = StringReactor;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> Self::Codec {
         StringCodec
     }
 
     fn new_reactor(
-        &self,
+        &mut self,
         optional_outbound: spillway::Sender<<Self::Codec as Encoder>::Message>,
         _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {

@@ -91,12 +91,12 @@ impl SocketService for DemoRpcSocketService {
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TlsSocketListener;
 
-    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec {
+    fn codec(&mut self) -> <Self::ConnectionService as ConnectionService>::Codec {
         Default::default()
     }
 
     fn new_stream_service(
-        &self,
+        &mut self,
         stream: &StreamWithAddress<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>,
     ) -> Self::ConnectionService {
         DemoRpcConnectionServer {

@@ -28,12 +28,12 @@ impl ServerConnector for ServerContext {
     type Codec = ByteBufferRingCodec;
     type Reactor = PooledReactor;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> Self::Codec {
         ByteBufferRingCodec::default()
     }
 
     fn new_reactor(
-        &self,
+        &mut self,
         optional_outbound: spillway::Sender<<Self::Codec as Encoder>::Message>,
         _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {
