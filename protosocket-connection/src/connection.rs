@@ -10,81 +10,11 @@ use bytes::Buf;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{
-    encoding::Codec,
     interrupted,
-    message_reactor::{MessageReactor, ReactorStatus, SendBudget, SendManyPermit, SendPermit},
+    message_reactor::{MessageReactor, ReactorStatus},
+    send_budget::SendBudget,
     would_block, Decoder, DeserializeError, Encoder,
 };
-
-/// The connection's send capacity, spent by encoding directly into the send buffer.
-struct EncodingSendBudget<'a, TCodec: Codec> {
-    codec: &'a mut TCodec,
-    send_buffer: &'a mut VecDeque<<TCodec as Encoder>::Serialized>,
-    remaining: usize,
-}
-
-impl<TCodec: Codec> SendBudget<<TCodec as Encoder>::Message> for EncodingSendBudget<'_, TCodec> {
-    fn reserve(&mut self) -> Option<impl SendPermit<<TCodec as Encoder>::Message> + '_> {
-        if self.remaining == 0 {
-            None
-        } else {
-            Some(EncodingSendPermit { budget: self })
-        }
-    }
-
-    fn reserve_many(
-        &mut self,
-        count: usize,
-    ) -> impl SendManyPermit<<TCodec as Encoder>::Message> + '_ {
-        let reserved = count.min(self.remaining);
-        EncodingSendManyPermit {
-            budget: self,
-            reserved,
-        }
-    }
-}
-
-/// A reserved slot in the send buffer.
-struct EncodingSendPermit<'a, 'b, TCodec: Codec> {
-    budget: &'a mut EncodingSendBudget<'b, TCodec>,
-}
-
-impl<TCodec: Codec> SendPermit<<TCodec as Encoder>::Message>
-    for EncodingSendPermit<'_, '_, TCodec>
-{
-    fn send(self, message: <TCodec as Encoder>::Message) {
-        self.budget.remaining -= 1;
-        let buffer = self.budget.codec.encode(message);
-        log::trace!("serialized reactor message: {}b", buffer.remaining());
-        self.budget.send_buffer.push_back(buffer);
-    }
-}
-
-/// A reserved run of slots in the send buffer.
-struct EncodingSendManyPermit<'a, 'b, TCodec: Codec> {
-    budget: &'a mut EncodingSendBudget<'b, TCodec>,
-    reserved: usize,
-}
-
-impl<TCodec: Codec> SendManyPermit<<TCodec as Encoder>::Message>
-    for EncodingSendManyPermit<'_, '_, TCodec>
-{
-    fn reserved(&self) -> usize {
-        self.reserved
-    }
-
-    fn send(&mut self, message: <TCodec as Encoder>::Message) {
-        assert!(
-            0 < self.reserved,
-            "sent more messages than the permit reserved"
-        );
-        self.reserved -= 1;
-        self.budget.remaining -= 1;
-        let buffer = self.budget.codec.encode(message);
-        log::trace!("serialized reactor message: {}b", buffer.remaining());
-        self.budget.send_buffer.push_back(buffer);
-    }
-}
 
 /// A bidirectional, message-oriented AsyncRead/AsyncWrite stream wrapper.
 ///
@@ -100,31 +30,23 @@ impl<TCodec: Codec> SendManyPermit<<TCodec as Encoder>::Message>
 pub struct Connection<
     // Bidirectional Stream type to use for this connection. Like `tokio::net::TcpStream`.
     TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-    // The wire / message codec for this connection.
-    TCodec: Codec,
-    // The message reactor for this connection.
-    TReactor: MessageReactor<Inbound = <TCodec as Decoder>::Message, Outbound = <TCodec as Encoder>::Message>,
+    // The message reactor for this connection. It brings the wire codec with it.
+    TReactor: MessageReactor,
 > {
     stream: TStream,
     outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
-    send_buffer: VecDeque<<TCodec as Encoder>::Serialized>,
+    send_buffer: VecDeque<<TReactor::Codec as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
     max_buffer_length: usize,
     max_queued_send_messages: usize,
     buffer_allocation_increment: usize,
-    codec: TCodec,
+    codec: TReactor::Codec,
     reactor: TReactor,
 }
 
-impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > std::fmt::Display for Connection<TStream, TCodec, TReactor>
+impl<TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static, TReactor: MessageReactor>
+    std::fmt::Display for Connection<TStream, TReactor>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let read_end = self.receive_buffer_unread_index;
@@ -138,25 +60,15 @@ impl<
     }
 }
 
-impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Unpin for Connection<TStream, TCodec, TReactor>
+impl<TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static, TReactor: MessageReactor>
+    Unpin for Connection<TStream, TReactor>
 {
 }
 
 impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Future for Connection<TStream, TCodec, TReactor>
+        TReactor: MessageReactor,
+    > Future for Connection<TStream, TReactor>
 {
     type Output = ();
 
@@ -201,14 +113,8 @@ impl<
     }
 }
 
-impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Drop for Connection<TStream, TCodec, TReactor>
+impl<TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static, TReactor: MessageReactor> Drop
+    for Connection<TStream, TReactor>
 {
     fn drop(&mut self) {
         log::debug!("connection dropped")
@@ -229,12 +135,8 @@ enum ReadBufferState {
 
 impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Connection<TStream, TCodec, TReactor>
+        TReactor: MessageReactor,
+    > Connection<TStream, TReactor>
 {
     /// Create a new protosocket Connection with the given stream and reactor.
     ///
@@ -242,7 +144,7 @@ impl<
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn new(
         stream: TStream,
-        codec: TCodec,
+        codec: TReactor::Codec,
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
@@ -436,11 +338,7 @@ impl<
                 codec,
                 ..
             } = self;
-            let mut outbound = EncodingSendBudget {
-                codec,
-                send_buffer,
-                remaining,
-            };
+            let mut outbound = SendBudget::new(codec, send_buffer, remaining);
             // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
             let reactor_state =
                 unsafe { Pin::new_unchecked(reactor) }.poll_outbound_many(context, &mut outbound);

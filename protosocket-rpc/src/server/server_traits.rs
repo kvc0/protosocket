@@ -11,24 +11,14 @@ use crate::Message;
 /// remote peer and it returns a ConnectionService for that connection. You can think of this as the
 /// "connection factory" for your server. It is the "top" of your service stack.
 pub trait SocketService: 'static {
-    /// Message encoding scheme
-    ///
-    /// Consider pooling your allocations, like with `protosocket::PooledEncoder`.
-    /// The write out to the network uses the raw `Encoder::Serialized` type, so you
-    /// can make outbound messages low-allocation via simple pooling.
-    type Codec: Codec + Decoder<Message: Message> + Encoder<Message: Message>;
-
     /// The type of connection service that will be created for each connection.
-    type ConnectionService: ConnectionService<
-        Request = <Self::Codec as Decoder>::Message,
-        Response = <Self::Codec as Encoder>::Message,
-    >;
+    type ConnectionService: ConnectionService;
 
     /// The listener type for this service. E.g., `TcpSocketListener`
     type SocketListener: SocketListener;
 
     /// Create a new message codec for a connection.
-    fn codec(&self) -> Self::Codec;
+    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec;
 
     /// Create a new ConnectionService for your new connection.
     /// The Stream will be wired into a `protosocket::Connection`. You can look at it in here
@@ -56,6 +46,15 @@ pub trait SocketService: 'static {
 ///
 /// Response message ids are stamped by the connection.
 pub trait ConnectionService: Unpin + 'static {
+    /// The wire codec for connections hosting this service.
+    ///
+    /// Consider pooling your allocations, like with `protosocket::PooledEncoder`.
+    /// The write out to the network uses the raw `Encoder::Serialized` type, so you
+    /// can make outbound messages low-allocation via simple pooling.
+    type Codec: Codec
+        + Decoder<Message = Self::Request>
+        + Encoder<Message = Self::Response>
+        + 'static;
     /// The type of request message, These messages initiate rpcs.
     type Request: Message;
     /// The type of response message, These messages complete rpcs, or are streamed from them.
@@ -91,10 +90,10 @@ pub trait ConnectionService: Unpin + 'static {
 
 /// Type of rpc to be completed
 pub enum RpcKind<Unary, Streaming> {
-    /// This is a unary rpc. It will complete with a single response.
+    /// A rpc that produces a single response.
     Unary(Unary),
-    /// This is a streaming rpc. It will complete with a stream of responses.
+    /// A rpc that produces a stream of responses.
     Streaming(Streaming),
-    /// Do not process this rpc. The initiating message is answered with a cancellation.
+    /// An immediate cancellation of an rpc.
     Cancelled,
 }

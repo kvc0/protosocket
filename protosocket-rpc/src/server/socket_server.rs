@@ -13,6 +13,9 @@ use crate::server::Spawn;
 use super::rpc_submitter::RpcSubmitter;
 use super::server_traits::{ConnectionService, SocketService};
 
+type ServiceCodec<TSocketService> =
+    <<TSocketService as SocketService>::ConnectionService as ConnectionService>::Codec;
+
 /// A `SocketRpcServer` is a server future. It listens on a socket and spawns new connections,
 /// with a ConnectionService to handle each connection.
 ///
@@ -41,15 +44,14 @@ impl<TSocketService>
         super::TokioSpawn<
             Connection<
                 <TSocketService::SocketListener as SocketListener>::Stream,
-                TSocketService::Codec,
                 RpcSubmitter<TSocketService::ConnectionService>,
             >,
         >,
     >
 where
     TSocketService: SocketService,
-    TSocketService::Codec: Send,
-    <TSocketService::Codec as Encoder>::Serialized: Send,
+    ServiceCodec<TSocketService>: Send,
+    <ServiceCodec<TSocketService> as Encoder>::Serialized: Send,
     <TSocketService::SocketListener as SocketListener>::Stream: Send,
     TSocketService::ConnectionService: Send,
     <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
@@ -83,7 +85,6 @@ where
     TSpawnConnection: Spawn<
         Connection<
             <TSocketService::SocketListener as SocketListener>::Stream,
-            TSocketService::Codec,
             RpcSubmitter<TSocketService::ConnectionService>,
         >,
     >,
@@ -129,7 +130,6 @@ where
     TSpawnConnection: Spawn<
         Connection<
             <TSocketService::SocketListener as SocketListener>::Stream,
-            TSocketService::Codec,
             RpcSubmitter<TSocketService::ConnectionService>,
         >,
     >,
@@ -150,7 +150,6 @@ where
                         #[allow(clippy::type_complexity)]
                         let connection: Connection<
                             <TSocketService::SocketListener as SocketListener>::Stream,
-                            TSocketService::Codec,
                             RpcSubmitter<TSocketService::ConnectionService>,
                         > = Connection::new(
                             stream,

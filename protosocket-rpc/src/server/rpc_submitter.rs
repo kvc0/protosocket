@@ -5,7 +5,7 @@ use std::{
 
 use futures::stream::{FuturesUnordered, StreamFuture};
 use futures::{Stream, StreamExt};
-use protosocket::{MessageReactor, SendManyPermit, SendPermit};
+use protosocket::{MessageReactor, SendBudget};
 
 use crate::{
     server::{abortion_tracker::AbortionTracker, ConnectionService, RpcKind},
@@ -33,8 +33,6 @@ where
 {
     connection_server: TConnectionService,
     aborts: AbortionTracker,
-    /// Message ids of rpcs to reject. Small and self-limiting: bounded by the inbound
-    /// messages processed between sends.
     rejections: Vec<u64>,
     rpcs: FuturesUnordered<StreamFuture<PooledRpc<TConnectionService>>>,
 }
@@ -96,6 +94,7 @@ impl<TConnectionService> MessageReactor for RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
 {
+    type Codec = TConnectionService::Codec;
     type Inbound = TConnectionService::Request;
     type Outbound = TConnectionService::Response;
     type LogicalOutbound = TConnectionService::Response;
@@ -150,23 +149,23 @@ where
     fn poll_outbound_many(
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
-        outbound: &mut impl protosocket::SendBudget<Self::Outbound>,
+        outbound: &mut SendBudget<'_, TConnectionService::Codec>,
     ) -> Poll<Option<()>> {
         let me = self.get_mut();
         let mut produced = 0usize;
         // First, yield any rejected RPC responses.
-        if !me.rejections.is_empty() {
-            let mut permits = outbound.reserve_many(me.rejections.len());
-            for message_id in me.rejections.drain(..permits.reserved()) {
-                permits.send(<Self::Outbound as Message>::cancelled(message_id));
-                produced += 1;
-            }
-        }
-        // Then poll ready RPCs until we either run out of room to send responses or run out of rpcs.
-        loop {
+        while !me.rejections.is_empty() {
             let Some(permit) = outbound.reserve() else {
                 break;
             };
+            let Some(message_id) = me.rejections.pop() else {
+                break;
+            };
+            permit.send(<Self::Outbound as Message>::cancelled(message_id));
+            produced += 1;
+        }
+        // Then poll ready RPCs until we either run out of room to send responses or run out of rpcs.
+        while let Some(permit) = outbound.reserve() {
             match pin!(&mut me.rpcs).poll_next(context) {
                 Poll::Ready(Some((first, mut rpc))) => {
                     let Some((id, event)) = first else {
@@ -174,7 +173,7 @@ where
                         // exhausted, and there's no more work to do for it.
                         continue;
                     };
-                    let terminal = !matches!(event, RpcStreamEvent::Item(_));
+                    let terminal = event.is_terminal();
                     permit.send(me.message_for_event(id, event));
                     produced += 1;
                     if terminal {
@@ -190,7 +189,7 @@ where
                         };
                         match pin!(&mut rpc).poll_next(context) {
                             Poll::Ready(Some((id, event))) => {
-                                let terminal = !matches!(event, RpcStreamEvent::Item(_));
+                                let terminal = event.is_terminal();
                                 permit.send(me.message_for_event(id, event));
                                 produced += 1;
                                 if terminal {

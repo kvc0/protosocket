@@ -1460,6 +1460,7 @@ name = "protosocket-rpc"
 version = "1.1.0"
 dependencies = [
  "ahash",
+ "bytes",
  "futures",
  "level-runtime",
  "log",

@@ -27,6 +27,7 @@ struct EchoReactor {
     outbound_messages: spillway::Sender<Bytes>,
 }
 impl MessageReactor for EchoReactor {
+    type Codec = (BulkEncoder, BulkDecoder);
     type Inbound = Bytes;
     type Outbound = Bytes;
     type LogicalOutbound = Bytes;

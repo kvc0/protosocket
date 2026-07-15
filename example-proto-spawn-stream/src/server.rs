@@ -8,13 +8,13 @@
 use std::pin::pin;
 use std::sync::atomic::AtomicUsize;
 
-use futures::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
+use futures::{future::BoxFuture, stream::BoxStream, Stream, StreamExt};
 use messages::{EchoRequest, EchoStream, Request, Response};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    ProtosocketControlCode,
     server::{ConnectionService, RpcKind, SocketService},
+    ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
 
@@ -61,14 +61,10 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type Codec = (
-        PooledEncoder<ProstSerializer<Response>>,
-        ProstDecoder<Request>,
-    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec {
         Default::default()
     }
 
@@ -84,6 +80,10 @@ struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
 }
 impl ConnectionService for DemoRpcConnectionServer {
+    type Codec = (
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
+    );
     type Request = Request;
     type Response = Response;
     type UnaryFutureType = BoxFuture<'static, Response>;

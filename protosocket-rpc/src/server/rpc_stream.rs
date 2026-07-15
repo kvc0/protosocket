@@ -31,19 +31,28 @@ enum RpcStreamKind<F, S> {
     Done,
 }
 
-/// An event from a pooled rpc, tagged with terminal-ness so the caller knows what, if
-/// anything, to put on the wire after it.
+/// An event from a pooled rpc.
 #[derive(Debug)]
 pub enum RpcStreamEvent<T> {
-    /// A streaming rpc produced a response item.
+    /// A streaming rpc produced a response item. Stream continues.
     Item(T),
-    /// A unary rpc completed with its single response. Terminal; the response is the
-    /// completion, no trailing control message belongs on the wire.
+    /// A unary rpc completed with its single response. Terminal.
     Complete(T),
-    /// A streaming rpc's stream finished. Terminal; the peer should be told the rpc ended.
+    /// A streaming rpc's stream finished. Terminal.
     Finished,
     /// The rpc was cancelled. Terminal.
     Cancelled,
+}
+
+impl<T> RpcStreamEvent<T> {
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            RpcStreamEvent::Item(_) => false,
+            RpcStreamEvent::Complete(_) | RpcStreamEvent::Finished | RpcStreamEvent::Cancelled => {
+                true
+            }
+        }
+    }
 }
 
 impl<F, S> RpcStream<F, S> {

@@ -88,14 +88,10 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService {}
 impl SocketService for DemoRpcSocketService {
-    type Codec = (
-        PooledEncoder<ProstSerializer<Response>>,
-        ProstDecoder<Request>,
-    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TlsSocketListener;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec {
         Default::default()
     }
 
@@ -115,6 +111,10 @@ struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
 }
 impl ConnectionService for DemoRpcConnectionServer {
+    type Codec = (
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
+    );
     type Request = Request;
     type Response = Response;
     type UnaryFutureType = BoxFuture<'static, Response>;

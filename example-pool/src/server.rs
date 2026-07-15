@@ -46,7 +46,6 @@ impl ServerConnector for ServerContext {
         &self,
         connection: protosocket::Connection<
             <Self::SocketListener as SocketListener>::Stream,
-            Self::Codec,
             Self::Reactor,
         >,
     ) {
@@ -58,6 +57,7 @@ struct PooledReactor {
     outbound: spillway::Sender<String>,
 }
 impl MessageReactor for PooledReactor {
+    type Codec = ByteBufferRingCodec;
     type Inbound = String;
     type Outbound = String;
     type LogicalOutbound = String;

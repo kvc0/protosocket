@@ -55,16 +55,10 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type Codec = (
-        // Use a pooled encoder to amortize memory allocation cost.
-        // Each connection gets its own little memory pool.
-        PooledEncoder<protosocket_messagepack::MessagePackSerializer<Response>>,
-        protosocket_messagepack::MessagePackDecoder<Request>,
-    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&self) -> <Self::ConnectionService as ConnectionService>::Codec {
         Default::default()
     }
 
@@ -82,6 +76,12 @@ struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
 }
 impl ConnectionService for DemoRpcConnectionServer {
+    type Codec = (
+        // Use a pooled encoder to amortize memory allocation cost.
+        // Each connection gets its own little memory pool.
+        PooledEncoder<protosocket_messagepack::MessagePackSerializer<Response>>,
+        protosocket_messagepack::MessagePackDecoder<Request>,
+    );
     type Request = Request;
     type Response = Response;
     type UnaryFutureType = futures::future::Ready<Response>;

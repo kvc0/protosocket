@@ -5,30 +5,29 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use protosocket::{MessageReactor, ReactorStatus};
+use protosocket::{Codec, Decoder, Encoder, MessageReactor, ReactorStatus};
 
 use crate::{message::ProtosocketControlCode, Message};
 
 use super::completion_registry::{Completion, CompletionRegistry};
 
 #[derive(Debug)]
-pub struct RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
+pub struct RpcCompletionReactor<TCodec, TUnregisteredMessageHandler>
 where
-    Inbound: Message,
-    Outbound: Message,
-    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
+    TCodec: Codec,
+    <TCodec as Decoder>::Message: Message,
+    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = <TCodec as Decoder>::Message>,
 {
-    rpc_registry: CompletionRegistry<Inbound>,
+    rpc_registry: CompletionRegistry<<TCodec as Decoder>::Message>,
     is_alive: Arc<AtomicBool>,
     unregistered_message_handler: TUnregisteredMessageHandler,
-    _phantom: PhantomData<Outbound>,
+    _phantom: PhantomData<fn(TCodec)>,
 }
-impl<Inbound, Outbound, TUnregisteredMessageHandler>
-    RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
+impl<TCodec, TUnregisteredMessageHandler> RpcCompletionReactor<TCodec, TUnregisteredMessageHandler>
 where
-    Inbound: Message,
-    Outbound: Message,
-    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
+    TCodec: Codec,
+    <TCodec as Decoder>::Message: Message,
+    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = <TCodec as Decoder>::Message>,
 {
     #[allow(clippy::new_without_default)]
     pub fn new(unregistered_message_handler: TUnregisteredMessageHandler) -> Self {
@@ -45,12 +44,12 @@ where
     }
 }
 
-impl<Inbound, Outbound, TUnregisteredMessageHandler> Drop
-    for RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
+impl<TCodec, TUnregisteredMessageHandler> Drop
+    for RpcCompletionReactor<TCodec, TUnregisteredMessageHandler>
 where
-    Inbound: Message,
-    Outbound: Message,
-    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
+    TCodec: Codec,
+    <TCodec as Decoder>::Message: Message,
+    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = <TCodec as Decoder>::Message>,
 {
     fn drop(&mut self) {
         self.is_alive
@@ -71,15 +70,17 @@ pub enum RpcNotification<Inbound, Outbound> {
     Cancel(u64),
 }
 
-impl<Inbound, Outbound, TUnregisteredMessageHandler> MessageReactor
-    for RpcCompletionReactor<Inbound, Outbound, TUnregisteredMessageHandler>
+impl<TCodec, TUnregisteredMessageHandler> MessageReactor
+    for RpcCompletionReactor<TCodec, TUnregisteredMessageHandler>
 where
-    Inbound: Message,
-    Outbound: Message,
-    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = Inbound>,
+    TCodec: Codec + 'static,
+    <TCodec as Decoder>::Message: Message,
+    <TCodec as Encoder>::Message: Message,
+    TUnregisteredMessageHandler: UnregisteredMessageHandler<Inbound = <TCodec as Decoder>::Message>,
 {
-    type Inbound = Inbound;
-    type Outbound = Outbound;
+    type Codec = TCodec;
+    type Inbound = <TCodec as Decoder>::Message;
+    type Outbound = <TCodec as Encoder>::Message;
     type LogicalOutbound = RpcNotification<Self::Inbound, Self::Outbound>;
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> ReactorStatus {
@@ -101,15 +102,21 @@ where
             Entry::Occupied(mut registered_rpc) => {
                 if let Completion::RemoteStreaming(stream) = registered_rpc.get_mut() {
                     if let Err(e) = stream.send(message) {
-                        log::debug!("{message_id} completion channel closed - did the client lose interest in this request? {e:?}");
+                        log::debug!(
+                            "{message_id} completion channel closed - did the client lose interest in this request? {e:?}"
+                        );
                         registered_rpc.remove();
                     }
                 } else if let Completion::Unary(completion) = registered_rpc.remove() {
                     if let Err(e) = completion.send(Ok(message)) {
-                        log::debug!("{message_id} completion channel closed - did the client lose interest in this request? {e:?}");
+                        log::debug!(
+                            "{message_id} completion channel closed - did the client lose interest in this request? {e:?}"
+                        );
                     }
                 } else {
-                    panic!("{message_id} unexpected command response type. Sorry, I wanted to borrow for streaming and remove by value for unary without doing 2 map lookups, so I couldn't match");
+                    panic!(
+                        "{message_id} unexpected command response type. Sorry, I wanted to borrow for streaming and remove by value for unary without doing 2 map lookups, so I couldn't match"
+                    );
                 }
             }
             Entry::Vacant(_vacant_entry) => {
@@ -137,7 +144,7 @@ where
             RpcNotification::Cancel(message_id) => {
                 log::trace!("{} cancelling rpc in completion reactor", message_id);
                 self.rpc_registry.deregister(message_id);
-                Outbound::cancelled(message_id)
+                <Self::Outbound as Message>::cancelled(message_id)
             }
         }
     }
