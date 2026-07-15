@@ -1,10 +1,10 @@
-use futures::{future::join_all, Stream};
+use futures::{future::join_all, stream::BoxStream, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    server::{ConnectionService, LevelSpawn, RpcResponder, SocketService},
-    Message, ProtosocketControlCode,
+    server::{ConnectionService, LevelSpawn, RpcKind, SocketService},
+    ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
 
@@ -61,23 +61,20 @@ async fn run_main() -> Result<(), std::io::Error> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type Codec = (
-        // Use a pooled encoder to amortize memory allocation cost.
-        // Each connection gets its own little memory pool.
-        PooledEncoder<ProstSerializer<Response>>,
-        ProstDecoder<Request>,
-    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> <Self::ConnectionService as ConnectionService>::Codec {
         (
             PooledEncoder::new_with_pool_size(64, Default::default()),
             ProstDecoder::default(),
         )
     }
 
-    fn new_stream_service(&self, stream: &StreamWithAddress<TcpStream>) -> Self::ConnectionService {
+    fn new_stream_service(
+        &mut self,
+        stream: &StreamWithAddress<TcpStream>,
+    ) -> Self::ConnectionService {
         log::info!("new connection server {}", stream.address());
         DemoRpcConnectionServer {
             address: stream.address(),
@@ -91,29 +88,36 @@ struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
 }
 impl ConnectionService for DemoRpcConnectionServer {
+    type Codec = (
+        // Use a pooled encoder to amortize memory allocation cost.
+        // Each connection gets its own little memory pool.
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
+    );
     type Request = Request;
     type Response = Response;
+    type UnaryFutureType = futures::future::Ready<Response>;
+    type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-        responder: RpcResponder<'_, Self::Response>,
-    ) {
+    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
         let behavior = initiating_message.response_behavior();
         match initiating_message.body {
             Some(echo) => match behavior {
-                ResponseBehavior::Unary => {
-                    responder.immediate(immediate_echo_response(request_id, echo))
-                }
+                ResponseBehavior::Unary => RpcKind::Unary(futures::future::ready(
+                    immediate_echo_response(request_id, echo),
+                )),
                 ResponseBehavior::Stream => {
-                    tokio::spawn(responder.stream(echo_stream(request_id, echo)));
+                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
                 }
             },
             None => {
-                log::warn!("received empty echo request: {initiating_message:?}");
-                responder.immediate(Response::cancelled(request_id));
+                log::warn!("received empty echo request id {request_id}");
+                RpcKind::Cancelled
             }
         }
     }

@@ -1,16 +1,10 @@
-use std::pin::pin;
-
-use futures::{
-    FutureExt, Stream,
-    future::{BoxFuture, join_all},
-    stream::FuturesUnordered,
-};
+use futures::{Stream, StreamExt, future::join_all, stream::BoxStream};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    Message, ProtosocketControlCode,
-    server::{ConnectionService, LevelSpawn, RpcResponder, SocketService},
+    ProtosocketControlCode,
+    server::{ConnectionService, LevelSpawn, RpcKind, SocketService},
 };
 use tokio::net::TcpStream;
 
@@ -67,81 +61,68 @@ async fn run_main() -> Result<(), std::io::Error> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
-    type Codec = (
-        // Use a pooled encoder to amortize memory allocation cost.
-        // Each connection gets its own little memory pool.
-        PooledEncoder<ProstSerializer<Response>>,
-        ProstDecoder<Request>,
-    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TcpSocketListener;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> <Self::ConnectionService as ConnectionService>::Codec {
         (
             PooledEncoder::new_with_pool_size(64, Default::default()),
             ProstDecoder::default(),
         )
     }
 
-    fn new_stream_service(&self, stream: &StreamWithAddress<TcpStream>) -> Self::ConnectionService {
+    fn new_stream_service(
+        &mut self,
+        stream: &StreamWithAddress<TcpStream>,
+    ) -> Self::ConnectionService {
         log::info!("new connection server {}", stream.address());
         DemoRpcConnectionServer {
             address: stream.address(),
-            streams: FuturesUnordered::new(),
         }
     }
 }
 
 /// This is the entry point for each Connection. State per-connection is tracked, and you
 /// get mutable access to the service on each new rpc for state tracking.
+///
+/// The connection drives your rpcs: they are only polled when the connection can send,
+/// so a slow peer slows its rpcs down instead of buffering responses without bound.
 struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
-    streams: FuturesUnordered<BoxFuture<'static, ()>>,
 }
 impl ConnectionService for DemoRpcConnectionServer {
+    type Codec = (
+        // Use a pooled encoder to amortize memory allocation cost.
+        // Each connection gets its own little memory pool.
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
+    );
     type Request = Request;
     type Response = Response;
+    type UnaryFutureType = futures::future::Ready<Response>;
+    type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-        responder: RpcResponder<'_, Self::Response>,
-    ) {
+    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
         let behavior = initiating_message.response_behavior();
         match initiating_message.body {
             Some(echo) => match behavior {
-                ResponseBehavior::Unary => {
-                    responder.immediate(immediate_echo_response(request_id, echo))
-                }
+                ResponseBehavior::Unary => RpcKind::Unary(futures::future::ready(
+                    immediate_echo_response(request_id, echo),
+                )),
                 ResponseBehavior::Stream => {
-                    self.streams
-                        .push(responder.stream(echo_stream(request_id, echo)).boxed());
+                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
                 }
             },
             None => {
-                log::warn!("received empty echo request: {initiating_message:?}");
-                responder.immediate(Response::cancelled(request_id));
+                log::warn!("received empty echo request id {request_id}");
+                RpcKind::Cancelled
             }
         }
-    }
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::ops::ControlFlow<()> {
-        while !self.streams.is_empty()
-            && let std::task::Poll::Ready(next) = pin!(&mut self.streams).poll_next(context)
-        {
-            if next.is_none() {
-                log::error!(
-                    "the stream of futures should never return None. We don't poll it while empty"
-                );
-                return std::ops::ControlFlow::Break(());
-            }
-        }
-        std::ops::ControlFlow::Continue(())
     }
 }
 

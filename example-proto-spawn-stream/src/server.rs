@@ -1,8 +1,17 @@
+//! A protosocket-rpc server that spawns its streaming rpc producers onto the runtime.
+//!
+//! Rpcs are normally polled by the connection, which stops polling them when the peer
+//! can't receive. Spawning decouples the producer from that backpressure: the task runs
+//! regardless. Bound it with a channel - its capacity is how far the producer can run
+//! ahead of the peer.
+
+use std::pin::pin;
 use std::sync::atomic::AtomicUsize;
 
-use futures::{stream::BoxStream, Stream, StreamExt};
-use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
+use futures::{future::BoxFuture, stream::BoxStream, Stream, StreamExt};
+use messages::{EchoRequest, EchoStream, Request, Response};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
+use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
     server::{ConnectionService, RpcKind, SocketService},
     ProtosocketControlCode,
@@ -50,9 +59,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// This is the service that will be used to handle new connections.
-/// It doesn't do much; yours might be simple like this too, or it might wire your per-connection
-/// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService;
 impl SocketService for DemoRpcSocketService {
     type ConnectionService = DemoRpcConnectionServer;
@@ -73,21 +79,17 @@ impl SocketService for DemoRpcSocketService {
     }
 }
 
-/// This is the entry point for each Connection. State per-connection is tracked, and you
-/// get mutable access to the service on each new rpc for state tracking.
 struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
 }
 impl ConnectionService for DemoRpcConnectionServer {
     type Codec = (
-        // Use a pooled encoder to amortize memory allocation cost.
-        // Each connection gets its own little memory pool.
-        PooledEncoder<protosocket_messagepack::MessagePackSerializer<Response>>,
-        protosocket_messagepack::MessagePackDecoder<Request>,
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
     );
     type Request = Request;
     type Response = Response;
-    type UnaryFutureType = futures::future::Ready<Response>;
+    type UnaryFutureType = BoxFuture<'static, Response>;
     type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
@@ -96,32 +98,30 @@ impl ConnectionService for DemoRpcConnectionServer {
     ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
-        let behavior = initiating_message.response_behavior;
         match initiating_message.body {
-            Some(echo) => match behavior {
-                ResponseBehavior::Unary => {
-                    RpcKind::Unary(futures::future::ready(echo_request(request_id, echo)))
-                }
-                ResponseBehavior::Stream => {
-                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
-                }
-            },
+            Some(echo) => {
+                // Spawn the producer behind a bounded channel. send().await is the
+                // backpressure: the producer waits while the channel is full, and quits
+                // when the rpc is cancelled or the connection closes (the receiver
+                // drops).
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+                tokio::spawn(async move {
+                    let mut stream = pin!(echo_stream(request_id, echo));
+                    while let Some(response) = stream.next().await {
+                        if sender.send(response).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                RpcKind::Streaming(
+                    futures::stream::poll_fn(move |context| receiver.poll_recv(context)).boxed(),
+                )
+            }
             None => {
-                log::warn!("{request_id} no request in rpc body");
+                log::warn!("received empty echo request id {request_id}");
                 RpcKind::Cancelled
             }
         }
-    }
-}
-
-fn echo_request(request_id: u64, echo: EchoRequest) -> Response {
-    Response {
-        request_id,
-        code: ProtosocketControlCode::Normal as u32,
-        kind: Some(messages::EchoResponseKind::Echo(EchoResponse {
-            message: echo.message,
-            nanotime: echo.nanotime,
-        })),
     }
 }
 
@@ -131,11 +131,11 @@ fn echo_stream(request_id: u64, echo: EchoRequest) -> impl Stream<Item = Respons
         move |(sequence, c)| Response {
             request_id,
             code: ProtosocketControlCode::Normal as u32,
-            kind: Some(messages::EchoResponseKind::Stream(EchoStream {
+            body: Some(EchoStream {
                 message: (c as char).to_string(),
                 nanotime,
                 sequence: sequence as u64,
-            })),
+            }),
         },
     ))
 }

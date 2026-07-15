@@ -28,12 +28,12 @@ impl ServerConnector for ServerContext {
     type Codec = ByteBufferRingCodec;
     type Reactor = PooledReactor;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> Self::Codec {
         ByteBufferRingCodec::default()
     }
 
     fn new_reactor(
-        &self,
+        &mut self,
         optional_outbound: spillway::Sender<<Self::Codec as Encoder>::Message>,
         _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {
@@ -46,7 +46,6 @@ impl ServerConnector for ServerContext {
         &self,
         connection: protosocket::Connection<
             <Self::SocketListener as SocketListener>::Stream,
-            Self::Codec,
             Self::Reactor,
         >,
     ) {
@@ -58,6 +57,7 @@ struct PooledReactor {
     outbound: spillway::Sender<String>,
 }
 impl MessageReactor for PooledReactor {
+    type Codec = ByteBufferRingCodec;
     type Inbound = String;
     type Outbound = String;
     type LogicalOutbound = String;

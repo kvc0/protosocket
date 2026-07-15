@@ -1,12 +1,12 @@
 use std::sync::atomic::AtomicUsize;
 
-use futures::Stream;
+use futures::{future::BoxFuture, stream::BoxStream, FutureExt, Stream, StreamExt};
 use messages::{EchoRequest, EchoResponse, EchoStream, Request, Response, ResponseBehavior};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener, TlsSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
-    server::{ConnectionService, RpcResponder, SocketService},
-    Message, ProtosocketControlCode,
+    server::{ConnectionService, RpcKind, SocketService},
+    ProtosocketControlCode,
 };
 use rustls_pemfile::Item;
 
@@ -88,19 +88,15 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 /// ConnectionServices to application-wide state tracking.
 struct DemoRpcSocketService {}
 impl SocketService for DemoRpcSocketService {
-    type Codec = (
-        PooledEncoder<ProstSerializer<Response>>,
-        ProstDecoder<Request>,
-    );
     type ConnectionService = DemoRpcConnectionServer;
     type SocketListener = TlsSocketListener;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> <Self::ConnectionService as ConnectionService>::Codec {
         Default::default()
     }
 
     fn new_stream_service(
-        &self,
+        &mut self,
         stream: &StreamWithAddress<tokio_rustls::server::TlsStream<tokio::net::TcpStream>>,
     ) -> Self::ConnectionService {
         DemoRpcConnectionServer {
@@ -115,33 +111,33 @@ struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
 }
 impl ConnectionService for DemoRpcConnectionServer {
+    type Codec = (
+        PooledEncoder<ProstSerializer<Response>>,
+        ProstDecoder<Request>,
+    );
     type Request = Request;
     type Response = Response;
+    type UnaryFutureType = BoxFuture<'static, Response>;
+    type StreamType = BoxStream<'static, Response>;
 
     fn new_rpc(
         &mut self,
         initiating_message: Self::Request,
-        responder: RpcResponder<'_, Self::Response>,
-    ) {
+    ) -> RpcKind<Self::UnaryFutureType, Self::StreamType> {
         log::debug!("{} new rpc: {initiating_message:?}", self.address);
         let request_id = initiating_message.request_id;
         let behavior = initiating_message.response_behavior();
         match initiating_message.body {
             Some(echo) => match behavior {
-                ResponseBehavior::Unary => {
-                    // See you can spawn the responder futures however you need to
-                    tokio::spawn(responder.unary(echo_request(request_id, echo)));
-                }
+                // An async fn works fine as a unary rpc - box it if it isn't Unpin.
+                ResponseBehavior::Unary => RpcKind::Unary(echo_request(request_id, echo).boxed()),
                 ResponseBehavior::Stream => {
-                    tokio::spawn(responder.stream(echo_stream(request_id, echo)));
+                    RpcKind::Streaming(echo_stream(request_id, echo).boxed())
                 }
             },
             None => {
-                // No completion messages will be sent for this message
-                log::warn!(
-                    "{request_id} no request in rpc body. This may cause a client memory leak."
-                );
-                responder.immediate(Response::cancelled(request_id));
+                log::warn!("{request_id} no request in rpc body");
+                RpcKind::Cancelled
             }
         }
     }

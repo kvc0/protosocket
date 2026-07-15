@@ -80,10 +80,8 @@ pub async fn connect<Codec, TStreamConnector>(
         >,
         protosocket::Connection<
             TStreamConnector::Stream,
-            Codec,
             RpcCompletionReactor<
-                <Codec as protosocket::Decoder>::Message,
-                <Codec as protosocket::Encoder>::Message,
+                Codec,
                 DoNothingMessageHandler<<Codec as protosocket::Decoder>::Message>,
             >,
         >,
@@ -113,8 +111,7 @@ where
     socket.set_reuse_address(true)?;
 
     let message_reactor: RpcCompletionReactor<
-        <Codec as protosocket::Decoder>::Message,
-        <Codec as protosocket::Encoder>::Message,
+        Codec,
         DoNothingMessageHandler<<Codec as protosocket::Decoder>::Message>,
     > = RpcCompletionReactor::new(Default::default());
     let (outbound, outbound_messages) = spillway::channel();
@@ -127,10 +124,8 @@ where
     // Tie outbound_messages to message_reactor via a protosocket::Connection
     let connection = Connection::<
         TStreamConnector::Stream,
-        Codec,
         RpcCompletionReactor<
-            <Codec as protosocket::Decoder>::Message,
-            <Codec as protosocket::Encoder>::Message,
+            Codec,
             DoNothingMessageHandler<<Codec as protosocket::Decoder>::Message>,
         >,
     >::new(

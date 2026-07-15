@@ -6,6 +6,8 @@ members = [
     "example-messagepack",
     "example-pool",
     "example-proto",
+    "example-proto-spawn",
+    "example-proto-spawn-stream",
     "example-proto-stream",
     "example-proto-tls",
     "example-telnet",

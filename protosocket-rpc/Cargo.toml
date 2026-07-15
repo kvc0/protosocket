@@ -28,5 +28,6 @@ thiserror               = { workspace = true }
 webpki-roots            = { workspace = true }
 
 [dev-dependencies]
+bytes                   = { workspace = true }
 prost                   = { workspace = true }
 tokio                   = { workspace = true, features = ["full"] }

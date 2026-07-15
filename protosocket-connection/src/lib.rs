@@ -13,6 +13,7 @@ mod encoding;
 mod error;
 mod message_reactor;
 mod pooled_encoder;
+mod send_budget;
 mod socket_listener;
 
 pub use connection::Connection;
@@ -26,6 +27,8 @@ pub use message_reactor::ReactorStatus;
 pub use pooled_encoder::PooledEncoder;
 pub use pooled_encoder::Reusable;
 pub use pooled_encoder::Serialize;
+pub use send_budget::SendBudget;
+pub use send_budget::SendPermit;
 pub use socket_listener::SocketListener;
 pub use socket_listener::SocketResult;
 pub use socket_listener::StreamWithAddress;

@@ -35,12 +35,12 @@ impl ServerConnector for ServerContext {
     type Codec = StringCodec;
     type Reactor = StringReactor;
 
-    fn codec(&self) -> Self::Codec {
+    fn codec(&mut self) -> Self::Codec {
         StringCodec
     }
 
     fn new_reactor(
-        &self,
+        &mut self,
         optional_outbound: spillway::Sender<<Self::Codec as Encoder>::Message>,
         _address: &StreamWithAddress<TcpStream>,
     ) -> Self::Reactor {
@@ -53,7 +53,6 @@ impl ServerConnector for ServerContext {
         &self,
         connection: protosocket::Connection<
             <Self::SocketListener as SocketListener>::Stream,
-            Self::Codec,
             Self::Reactor,
         >,
     ) {
@@ -65,6 +64,7 @@ struct StringReactor {
     outbound: spillway::Sender<String>,
 }
 impl MessageReactor for StringReactor {
+    type Codec = StringCodec;
     type Inbound = String;
     type Outbound = String;
     type LogicalOutbound = String;

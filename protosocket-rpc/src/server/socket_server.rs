@@ -11,7 +11,10 @@ use std::task::Poll;
 use crate::server::Spawn;
 
 use super::rpc_submitter::RpcSubmitter;
-use super::server_traits::SocketService;
+use super::server_traits::{ConnectionService, SocketService};
+
+type ServiceCodec<TSocketService> =
+    <<TSocketService as SocketService>::ConnectionService as ConnectionService>::Codec;
 
 /// A `SocketRpcServer` is a server future. It listens on a socket and spawns new connections,
 /// with a ConnectionService to handle each connection.
@@ -41,17 +44,18 @@ impl<TSocketService>
         super::TokioSpawn<
             Connection<
                 <TSocketService::SocketListener as SocketListener>::Stream,
-                TSocketService::Codec,
                 RpcSubmitter<TSocketService::ConnectionService>,
             >,
         >,
     >
 where
     TSocketService: SocketService,
-    TSocketService::Codec: Send,
-    <TSocketService::Codec as Encoder>::Serialized: Send,
+    ServiceCodec<TSocketService>: Send,
+    <ServiceCodec<TSocketService> as Encoder>::Serialized: Send,
     <TSocketService::SocketListener as SocketListener>::Stream: Send,
     TSocketService::ConnectionService: Send,
+    <TSocketService::ConnectionService as ConnectionService>::UnaryFutureType: Send,
+    <TSocketService::ConnectionService as ConnectionService>::StreamType: Send,
 {
     /// Construct a new `SocketRpcServer` with a listener.
     ///
@@ -81,7 +85,6 @@ where
     TSpawnConnection: Spawn<
         Connection<
             <TSocketService::SocketListener as SocketListener>::Stream,
-            TSocketService::Codec,
             RpcSubmitter<TSocketService::ConnectionService>,
         >,
     >,
@@ -127,7 +130,6 @@ where
     TSpawnConnection: Spawn<
         Connection<
             <TSocketService::SocketListener as SocketListener>::Stream,
-            TSocketService::Codec,
             RpcSubmitter<TSocketService::ConnectionService>,
         >,
     >,
@@ -140,12 +142,14 @@ where
                 Poll::Ready(result) => match result {
                     SocketResult::Stream(stream) => {
                         let connection_service = self.socket_server.new_stream_service(&stream);
-                        let (outbound_messages, outbound_messages_receiver) = spillway::channel();
-                        let submitter = RpcSubmitter::new(connection_service, outbound_messages);
+                        // The rpc server produces all responses through the submitter, so
+                        // the queue's senders are dropped immediately: the connection's
+                        // lifetime is governed by the socket and the submitter alone.
+                        let (_no_senders, outbound_messages_receiver) = spillway::channel();
+                        let submitter = RpcSubmitter::new(connection_service);
                         #[allow(clippy::type_complexity)]
                         let connection: Connection<
                             <TSocketService::SocketListener as SocketListener>::Stream,
-                            TSocketService::Codec,
                             RpcSubmitter<TSocketService::ConnectionService>,
                         > = Connection::new(
                             stream,

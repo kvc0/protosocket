@@ -1,63 +1,123 @@
-use protosocket::MessageReactor;
+use std::{
+    pin::{pin, Pin},
+    task::{Context, Poll},
+};
+
+use futures::stream::{FuturesUnordered, StreamFuture};
+use futures::{Stream, StreamExt};
+use protosocket::{MessageReactor, SendBudget};
 
 use crate::{
-    server::{abortion_tracker::AbortionTracker, rpc_responder::RpcResponder, ConnectionService},
+    server::{abortion_tracker::AbortionTracker, ConnectionService, RpcKind},
     Message, ProtosocketControlCode,
 };
 
-/// A MessageReactor that sends RPCs along to a sink
-#[derive(Debug)]
-pub struct RpcSubmitter<TConnectionServer>
+use super::rpc_stream::{RpcStream, RpcStreamEvent};
+
+type PooledRpc<TConnectionService> = RpcStream<
+    <TConnectionService as ConnectionService>::UnaryFutureType,
+    <TConnectionService as ConnectionService>::StreamType,
+>;
+
+/// A MessageReactor that hosts a ConnectionService's rpcs.
+///
+/// New rpcs are registered from inbound messages. Their completions live in a pool and
+/// are advanced by `poll_outbound_many`. The connection only polls outbound when it
+/// has room to send. If you spawn your rpc's, you may want to limit concurrent RPCs to
+/// avoid spawning unbounded work against a write-blocked connection.
+///
+/// Rpc messages are sent in readiness order.
+pub struct RpcSubmitter<TConnectionService>
 where
-    TConnectionServer: ConnectionService,
+    TConnectionService: ConnectionService,
 {
-    connection_server: TConnectionServer,
-    outbound: spillway::Sender<RpcResponse<<TConnectionServer as ConnectionService>::Response>>,
+    connection_server: TConnectionService,
     aborts: AbortionTracker,
+    rejections: Vec<u64>,
+    rpcs: FuturesUnordered<StreamFuture<PooledRpc<TConnectionService>>>,
 }
+
+impl<TConnectionService> std::fmt::Debug for RpcSubmitter<TConnectionService>
+where
+    TConnectionService: ConnectionService,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RpcSubmitter")
+            .field("aborts", &self.aborts)
+            .field("rejections", &self.rejections.len())
+            .field("rpcs", &self.rpcs.len())
+            .finish()
+    }
+}
+
 impl<TConnectionService> RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
 {
-    pub fn new(
-        connection_server: TConnectionService,
-        outbound: spillway::Sender<RpcResponse<TConnectionService::Response>>,
-    ) -> Self {
+    pub fn new(connection_server: TConnectionService) -> Self {
         Self {
             connection_server,
-            outbound,
             aborts: Default::default(),
+            rejections: Default::default(),
+            rpcs: Default::default(),
         }
     }
-}
 
-pub enum RpcResponse<T> {
-    Partial(T),
-    Final(T),
-    Untracked(T),
+    fn message_for_event(
+        &mut self,
+        id: u64,
+        event: RpcStreamEvent<TConnectionService::Response>,
+    ) -> TConnectionService::Response {
+        match event {
+            RpcStreamEvent::Item(mut item) => {
+                item.set_message_id(id);
+                item
+            }
+            RpcStreamEvent::Complete(mut response) => {
+                let _ = self.aborts.take_abort(id);
+                response.set_message_id(id);
+                response
+            }
+            RpcStreamEvent::Finished => {
+                let _ = self.aborts.take_abort(id);
+                <TConnectionService::Response as Message>::ended(id)
+            }
+            RpcStreamEvent::Cancelled => {
+                let _ = self.aborts.take_abort(id);
+                <TConnectionService::Response as Message>::cancelled(id)
+            }
+        }
+    }
 }
 
 impl<TConnectionService> MessageReactor for RpcSubmitter<TConnectionService>
 where
     TConnectionService: ConnectionService,
 {
+    type Codec = TConnectionService::Codec;
     type Inbound = TConnectionService::Request;
     type Outbound = TConnectionService::Response;
-    type LogicalOutbound = RpcResponse<TConnectionService::Response>;
+    type LogicalOutbound = TConnectionService::Response;
 
     fn on_inbound_message(&mut self, message: Self::Inbound) -> protosocket::ReactorStatus {
         let message_id = message.message_id();
         match message.control_code() {
-            ProtosocketControlCode::Normal => {
-                self.connection_server.new_rpc(
-                    message,
-                    RpcResponder::new_responder_reference(
-                        &self.outbound,
-                        &mut self.aborts,
-                        message_id,
-                    ),
-                );
-            }
+            ProtosocketControlCode::Normal => match self.connection_server.new_rpc(message) {
+                RpcKind::Unary(completion) => {
+                    let (rpc, handle) = RpcStream::new_unary(message_id, completion);
+                    self.aborts.register(message_id, handle);
+                    self.rpcs.push(rpc.into_future());
+                }
+                RpcKind::Streaming(stream) => {
+                    let (rpc, handle) = RpcStream::new_streaming(message_id, stream);
+                    self.aborts.register(message_id, handle);
+                    self.rpcs.push(rpc.into_future());
+                }
+                RpcKind::Cancelled => {
+                    log::debug!("rejecting rpc {message_id}");
+                    self.rejections.push(message_id);
+                }
+            },
             ProtosocketControlCode::Cancel => {
                 if let Some(abort) = self.aborts.take_abort(message_id) {
                     log::debug!("cancelling message {message_id}");
@@ -74,114 +134,85 @@ where
     }
 
     fn on_outbound_message(&mut self, response: Self::LogicalOutbound) -> Self::Outbound {
-        match response {
-            RpcResponse::Partial(message) => message,
-            RpcResponse::Untracked(message) => message,
-            RpcResponse::Final(message) => {
-                if self.aborts.take_abort(message.message_id()).is_none() {
-                    log::debug!(
-                        "final response for untracked message {}",
-                        message.message_id()
-                    );
-                }
-                message
-            }
-        }
+        response
     }
 
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::ops::ControlFlow<()> {
-        // SAFETY: This is a structural pin. If I'm not moved then neither is this future.
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> std::ops::ControlFlow<()> {
+        // SAFETY: This is a structural pin. If I'm not moved then neither is this service.
         let structurally_pinned_connection_server = unsafe {
             self.as_mut()
                 .map_unchecked_mut(|me| &mut me.connection_server)
         };
         structurally_pinned_connection_server.poll(context)
     }
-}
 
-impl<TConnectionService> RpcSubmitter<TConnectionService>
-where
-    TConnectionService: ConnectionService,
-{
-    // fn poll_advance_streaming_rpcs(
-    //     mut self: Pin<&mut Self>,
-    //     context: &mut Context<'_>,
-    // ) -> Option<Poll<Result<(), crate::Error>>> {
-    //     if self.outstanding_streaming_rpcs.is_empty() {
-    //         log::trace!("no outstanding streaming rpcs to advance");
-    //         return None;
-    //     }
-    //     while let Poll::Ready(streaming_next) =
-    //         futures::Stream::poll_next(pin!(&mut self.outstanding_streaming_rpcs), context)
-    //     {
-    //         match streaming_next {
-    //             Some((id, AbortableState::Ready(Ok(next)))) => {
-    //                 log::debug!("{id} streaming rpc next {next:?}");
-    //                 if let Err(_e) = self.outbound.send(next) {
-    //                     log::debug!("outbound connection is closed");
-    //                     return Some(Poll::Ready(Err(crate::Error::ConnectionIsClosed)));
-    //                 }
-    //             }
-    //             Some((id, AbortableState::Ready(Err(e)))) => {
-    //                 let abort = self.aborts.remove(&id);
-    //                 match e {
-    //                     crate::Error::IoFailure(error) => {
-    //                         log::warn!("{id} io failure while servicing rpc: {error:?}");
-    //                         if let Some(abort) = abort {
-    //                             abort.abort();
-    //                         }
-    //                     }
-    //                     crate::Error::CancelledRemotely => {
-    //                         log::debug!("{id} rpc cancelled remotely");
-    //                         if let Some(abort) = abort {
-    //                             abort.abort();
-    //                         }
-    //                     }
-    //                     crate::Error::ConnectionIsClosed => {
-    //                         log::debug!("{id} rpc cancelled remotely");
-    //                         if let Some(abort) = abort {
-    //                             abort.abort();
-    //                         }
-    //                     }
-    //                     crate::Error::Finished => {
-    //                         log::debug!("{id} streaming rpc ended");
-    //                         if let Some(abort) = abort {
-    //                             if let Err(_e) = self
-    //                                 .outbound
-    //                                 .send(<TConnectionService::Response as Message>::ended(id))
-    //                             {
-    //                                 log::debug!("outbound connection is closed");
-    //                                 return Some(Poll::Ready(Err(
-    //                                     crate::Error::ConnectionIsClosed,
-    //                                 )));
-    //                             }
-    //                             abort.mark_aborted();
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //             Some((id, AbortableState::Abort)) => {
-    //                 // This happens when the upstream stuff is dropped and there are no messages that can be produced. We'll send a cancellation.
-    //                 log::debug!("{id} streaming rpc abort");
-    //                 if let Some(abort) = self.aborts.remove(&id) {
-    //                     abort.abort();
-    //                 }
-    //             }
-    //             Some((id, AbortableState::Aborted)) => {
-    //                 log::debug!("{id} streaming rpc done");
-    //                 if let Some(abort) = self.aborts.remove(&id) {
-    //                     abort.mark_aborted();
-    //                 }
-    //             }
-    //             None => {
-    //                 // nothing to wait for
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     None
-    // }
+    fn poll_outbound_many(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        outbound: &mut SendBudget<'_, TConnectionService::Codec>,
+    ) -> Poll<Option<()>> {
+        let me = self.get_mut();
+        let mut produced = 0usize;
+        // First, yield any rejected RPC responses.
+        while !me.rejections.is_empty() {
+            let Some(permit) = outbound.reserve() else {
+                break;
+            };
+            let Some(message_id) = me.rejections.pop() else {
+                break;
+            };
+            permit.send(<Self::Outbound as Message>::cancelled(message_id));
+            produced += 1;
+        }
+        // Then poll ready RPCs until we either run out of room to send responses or run out of rpcs.
+        while let Some(permit) = outbound.reserve() {
+            match pin!(&mut me.rpcs).poll_next(context) {
+                Poll::Ready(Some((first, mut rpc))) => {
+                    let Some((id, event)) = first else {
+                        // StreamFuture yielded None: this rpc's stream was already
+                        // exhausted, and there's no more work to do for it.
+                        continue;
+                    };
+                    let terminal = event.is_terminal();
+                    permit.send(me.message_for_event(id, event));
+                    produced += 1;
+                    if terminal {
+                        continue;
+                    }
+                    // If an RPC is ready, continue to poll it while it has ready responses, so that
+                    // streaming RPCs with many ready responses don't have to retransit the rpc pool
+                    // for each response. Track whether the RPC has terminated - if it's exhausted, we
+                    // don't need to put it back.
+                    let retired = loop {
+                        let Some(permit) = outbound.reserve() else {
+                            break false;
+                        };
+                        match pin!(&mut rpc).poll_next(context) {
+                            Poll::Ready(Some((id, event))) => {
+                                let terminal = event.is_terminal();
+                                permit.send(me.message_for_event(id, event));
+                                produced += 1;
+                                if terminal {
+                                    break true;
+                                }
+                            }
+                            Poll::Ready(None) => break true,
+                            Poll::Pending => break false,
+                        }
+                    };
+                    if !retired {
+                        me.rpcs.push(rpc.into_future());
+                    }
+                }
+                // An empty pool is not a finished reactor: new rpcs arrive from inbound
+                // processing, which wakes this connection.
+                Poll::Ready(None) | Poll::Pending => break,
+            }
+        }
+        if 0 < produced {
+            Poll::Ready(Some(()))
+        } else {
+            Poll::Pending
+        }
+    }
 }

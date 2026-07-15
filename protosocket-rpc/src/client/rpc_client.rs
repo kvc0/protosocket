@@ -43,14 +43,15 @@ where
     Request: Message,
     Response: Message,
 {
-    pub(crate) fn new(
+    pub(crate) fn new<TCodec>(
         submission_queue: spillway::Sender<RpcNotification<Response, Request>>,
-        message_reactor: &RpcCompletionReactor<
-            Response,
-            Request,
-            DoNothingMessageHandler<Response>,
-        >,
-    ) -> Self {
+        message_reactor: &RpcCompletionReactor<TCodec, DoNothingMessageHandler<Response>>,
+    ) -> Self
+    where
+        TCodec: protosocket::Codec
+            + protosocket::Decoder<Message = Response>
+            + protosocket::Encoder<Message = Request>,
+    {
         Self {
             submission_queue,
             is_alive: message_reactor.alive_handle(),
@@ -168,6 +169,34 @@ mod test {
         }
     }
 
+    /// A codec for the u64 test messages. These tests never move real bytes; this
+    /// only gives the reactor its codec type.
+    struct TestCodec;
+    impl protosocket::Encoder for TestCodec {
+        type Message = u64;
+        type Serialized = bytes::Bytes;
+
+        fn encode(&mut self, message: Self::Message) -> Self::Serialized {
+            bytes::Bytes::copy_from_slice(&message.to_le_bytes())
+        }
+    }
+    impl protosocket::Decoder for TestCodec {
+        type Message = u64;
+
+        fn decode(
+            &mut self,
+            mut buffer: impl bytes::Buf,
+        ) -> Result<(usize, Self::Message), protosocket::DeserializeError> {
+            if buffer.remaining() < 8 {
+                return Err(protosocket::DeserializeError::IncompleteBuffer {
+                    next_message_size: 8,
+                });
+            }
+            Ok((8, buffer.get_u64_le()))
+        }
+    }
+    impl protosocket::Codec for TestCodec {}
+
     fn drive_future<F: Future>(f: F) -> F::Output {
         let mut f = pin!(f);
         loop {
@@ -182,11 +211,11 @@ mod test {
     fn get_client() -> (
         spillway::Receiver<RpcNotification<u64, u64>>,
         RpcClient<u64, u64>,
-        RpcCompletionReactor<u64, u64, DoNothingMessageHandler<u64>>,
+        RpcCompletionReactor<TestCodec, DoNothingMessageHandler<u64>>,
     ) {
         let (sender, remote_end) = spillway::channel();
         let rpc_reactor =
-            RpcCompletionReactor::<u64, u64, _>::new(DoNothingMessageHandler::default());
+            RpcCompletionReactor::<TestCodec, _>::new(DoNothingMessageHandler::default());
         let client = RpcClient::new(sender, &rpc_reactor);
         (remote_end, client, rpc_reactor)
     }
@@ -234,7 +263,7 @@ mod test {
             Vec<(
                 spillway::Receiver<RpcNotification<u64, u64>>,
                 RpcClient<u64, u64>,
-                RpcCompletionReactor<u64, u64, DoNothingMessageHandler<u64>>,
+                RpcCompletionReactor<TestCodec, DoNothingMessageHandler<u64>>,
             )>,
         >,
         fail_connections: AtomicBool,

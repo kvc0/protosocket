@@ -1,7 +1,5 @@
 use protosocket::Codec;
 use protosocket::Connection;
-use protosocket::Decoder;
-use protosocket::Encoder;
 use protosocket::MessageReactor;
 use protosocket::SocketListener;
 use protosocket::SocketResult;
@@ -16,21 +14,19 @@ use std::task::Poll;
 /// The ServerConnector listens to a socket and spawns a Reactor for each new connection.
 pub trait ServerConnector: Unpin {
     /// Message encoding
-    type Codec: Codec
-        + Decoder<Message = <Self::Reactor as MessageReactor>::Inbound>
-        + Encoder<Message = <Self::Reactor as MessageReactor>::Outbound>;
+    type Codec: Codec;
     /// Per-connection message handler
-    type Reactor: MessageReactor;
+    type Reactor: MessageReactor<Codec = Self::Codec>;
     /// The listener type for this service. E.g., `TcpSocketListener`
     type SocketListener: SocketListener;
 
     /// Create a new message codec for a connection
-    fn codec(&self) -> Self::Codec;
+    fn codec(&mut self) -> Self::Codec;
 
     /// Create a per-connection message Reactor.
     /// You can look at the connection in here if you need some data, like a SocketAddr
     fn new_reactor(
-        &self,
+        &mut self,
         optional_outbound: spillway::Sender<<Self::Reactor as MessageReactor>::LogicalOutbound>,
         _connection: &<Self::SocketListener as SocketListener>::Stream,
     ) -> Self::Reactor;
@@ -38,11 +34,7 @@ pub trait ServerConnector: Unpin {
     /// Spawn a connection - probably you just want tokio::spawn, but you might have other needs.
     fn spawn_connection(
         &self,
-        connection: Connection<
-            <Self::SocketListener as SocketListener>::Stream,
-            Self::Codec,
-            Self::Reactor,
-        >,
+        connection: Connection<<Self::SocketListener as SocketListener>::Stream, Self::Reactor>,
     );
 }
 

@@ -10,9 +10,9 @@ use bytes::Buf;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{
-    encoding::Codec,
     interrupted,
     message_reactor::{MessageReactor, ReactorStatus},
+    send_budget::SendBudget,
     would_block, Decoder, DeserializeError, Encoder,
 };
 
@@ -30,60 +30,45 @@ use crate::{
 pub struct Connection<
     // Bidirectional Stream type to use for this connection. Like `tokio::net::TcpStream`.
     TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-    // The wire / message codec for this connection.
-    TCodec: Codec,
-    // The message reactor for this connection.
-    TReactor: MessageReactor<Inbound = <TCodec as Decoder>::Message, Outbound = <TCodec as Encoder>::Message>,
+    // The message reactor for this connection. It brings the wire codec with it.
+    TReactor: MessageReactor,
 > {
     stream: TStream,
     outbound_messages: spillway::Receiver<TReactor::LogicalOutbound>,
-    send_buffer: VecDeque<<TCodec as Encoder>::Serialized>,
+    send_buffer: VecDeque<<TReactor::Codec as Encoder>::Serialized>,
     receive_buffer_unread_index: usize,
     receive_buffer: Vec<u8>,
     max_buffer_length: usize,
     max_queued_send_messages: usize,
     buffer_allocation_increment: usize,
-    codec: TCodec,
+    codec: TReactor::Codec,
     reactor: TReactor,
 }
 
-impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > std::fmt::Display for Connection<TStream, TCodec, TReactor>
+impl<TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static, TReactor: MessageReactor>
+    std::fmt::Display for Connection<TStream, TReactor>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let read_end = self.receive_buffer_unread_index;
         let read_capacity = self.receive_buffer.len();
         let write_queue = self.send_buffer.len();
         let write_length: usize = self.send_buffer.iter().map(|b| b.remaining()).sum();
-        write!(f, "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}} }}")
+        write!(
+            f,
+            "Connection: {{read{{end: {read_end}, capacity: {read_capacity}}}, write{{queue: {write_queue}, length: {write_length}}} }}"
+        )
     }
 }
 
-impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Unpin for Connection<TStream, TCodec, TReactor>
+impl<TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static, TReactor: MessageReactor>
+    Unpin for Connection<TStream, TReactor>
 {
 }
 
 impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Future for Connection<TStream, TCodec, TReactor>
+        TReactor: MessageReactor,
+    > Future for Connection<TStream, TReactor>
 {
     type Output = ();
 
@@ -128,14 +113,8 @@ impl<
     }
 }
 
-impl<
-        TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Drop for Connection<TStream, TCodec, TReactor>
+impl<TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static, TReactor: MessageReactor> Drop
+    for Connection<TStream, TReactor>
 {
     fn drop(&mut self) {
         log::debug!("connection dropped")
@@ -156,12 +135,8 @@ enum ReadBufferState {
 
 impl<
         TStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-        TCodec: Codec,
-        TReactor: MessageReactor<
-            Inbound = <TCodec as Decoder>::Message,
-            Outbound = <TCodec as Encoder>::Message,
-        >,
-    > Connection<TStream, TCodec, TReactor>
+        TReactor: MessageReactor,
+    > Connection<TStream, TReactor>
 {
     /// Create a new protosocket Connection with the given stream and reactor.
     ///
@@ -169,7 +144,7 @@ impl<
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn new(
         stream: TStream,
-        codec: TCodec,
+        codec: TReactor::Codec,
         max_buffer_length: usize,
         buffer_allocation_increment: usize,
         max_queued_send_messages: usize,
@@ -240,7 +215,11 @@ impl<
                 Err(e) => match e {
                     DeserializeError::IncompleteBuffer { next_message_size } => {
                         if self.max_buffer_length < next_message_size {
-                            log::error!("tried to receive message that is too long. Resetting connection - max: {}, requested: {}", self.max_buffer_length, next_message_size);
+                            log::error!(
+                                "tried to receive message that is too long. Resetting connection - max: {}, requested: {}",
+                                self.max_buffer_length,
+                                next_message_size
+                            );
                             return ReadBufferState::Disconnected;
                         }
                         log::debug!("waiting for the next message of length {next_message_size}");
@@ -252,7 +231,10 @@ impl<
                     }
                     DeserializeError::SkipMessage { distance } => {
                         if self.receive_buffer_unread_index - buffer_cursor < distance {
-                            log::trace!("cannot skip yet, need to read more. Skipping: {distance}, remaining:{}", self.receive_buffer_unread_index - buffer_cursor);
+                            log::trace!(
+                                "cannot skip yet, need to read more. Skipping: {distance}, remaining:{}",
+                                self.receive_buffer_unread_index - buffer_cursor
+                            );
                             break ReadBufferState::Pending;
                         }
                         log::debug!("skipping message of length {distance}");
@@ -313,7 +295,10 @@ impl<
         }
     }
 
-    /// This serializes work-in-progress messages and moves them over into the write queue
+    /// This serializes work-in-progress messages and moves them over into the write queue.
+    ///
+    /// Outbound messages come from the queue and from the reactor, in that order, within
+    /// the send budget. The connection closes when both sources are exhausted.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn poll_serialize_outbound_messages(&mut self, context: &mut Context<'_>) -> Poll<()> {
         let max_outbound = self.max_queued_send_messages - self.send_buffer.len();
@@ -324,26 +309,43 @@ impl<
         }
 
         let start_len = self.send_buffer.len();
-        for _ in 0..max_outbound {
-            let message = match self.outbound_messages.poll_next(context) {
-                Poll::Pending => {
-                    log::debug!("no more messages to serialize, and we are pending for more");
-                    break;
+        let mut queue_closed = false;
+        while self.send_buffer.len() - start_len < max_outbound {
+            match self.outbound_messages.poll_next(context) {
+                Poll::Ready(Some(message)) => {
+                    let message = self.reactor.on_outbound_message(message);
+                    let buffer = self.codec.encode(message);
+                    log::trace!(
+                        "serialized message and enqueueing outbound buffer: {}b",
+                        buffer.remaining()
+                    );
+                    // queue up a writev
+                    self.send_buffer.push_back(buffer);
                 }
                 Poll::Ready(None) => {
-                    log::info!("outbound message channel was closed");
-                    return Poll::Ready(());
+                    queue_closed = true;
+                    break;
                 }
-                Poll::Ready(Some(next)) => next,
-            };
-            let message = self.reactor.on_outbound_message(message);
-            let buffer = self.codec.encode(message);
-            log::trace!(
-                "serialized message and enqueueing outbound buffer: {}b",
-                buffer.remaining()
-            );
-            // queue up a writev
-            self.send_buffer.push_back(buffer);
+                Poll::Pending => break,
+            }
+        }
+
+        let remaining = max_outbound - (self.send_buffer.len() - start_len);
+        if 0 < remaining {
+            let Self {
+                send_buffer,
+                reactor,
+                codec,
+                ..
+            } = self;
+            let mut outbound = SendBudget::new(codec, send_buffer, remaining);
+            // SAFETY: This is a structural pin. If I'm not moved then neither is this reactor.
+            let reactor_state =
+                unsafe { Pin::new_unchecked(reactor) }.poll_outbound_many(context, &mut outbound);
+            if queue_closed && matches!(reactor_state, Poll::Ready(None)) {
+                log::info!("all outbound message sources are exhausted");
+                return Poll::Ready(());
+            }
         }
         let new_len = self.send_buffer.len();
         if start_len != new_len {
@@ -450,7 +452,9 @@ impl<
                 } else {
                     // Walk the buffer forward. It needs to be the next bytes on the wire, so we'll put it back in front.
                     // Partial buffer consumption is relatively uncommon, but it definitely happens.
-                    log::debug!("after writing {total_written}b, advancing partially written buffer of {remaining}b by {written}b");
+                    log::debug!(
+                        "after writing {total_written}b, advancing partially written buffer of {remaining}b by {written}b"
+                    );
                     front.advance(written);
                     self.send_buffer.push_front(front);
                     break;
