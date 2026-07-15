@@ -1,24 +1,22 @@
-//! A protosocket-rpc server that spawns its unary rpcs onto the runtime.
+//! A protosocket-rpc server that spawns its streaming rpc producers onto the runtime.
 //!
 //! Rpcs are normally polled by the connection, which stops polling them when the peer
-//! can't receive. Spawning decouples rpc work from that backpressure: the spawned task
-//! runs regardless. Bound what you spawn - here, rpcs shed load when the connection's
-//! spawn slots are all in flight.
+//! can't receive. Spawning decouples the producer from that backpressure: the task runs
+//! regardless. Bound it with a channel - its capacity is how far the producer can run
+//! ahead of the peer.
 
+use std::pin::pin;
 use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-use std::time::Duration;
 
-use futures::{future::BoxFuture, stream::BoxStream, FutureExt};
-use messages::{EchoRequest, EchoResponse, Request, Response};
+use futures::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
+use messages::{EchoRequest, EchoStream, Request, Response};
 use protosocket::{PooledEncoder, StreamWithAddress, TcpSocketListener};
 use protosocket_prost::{ProstDecoder, ProstSerializer};
 use protosocket_rpc::{
+    ProtosocketControlCode,
     server::{ConnectionService, RpcKind, SocketService},
-    Message, ProtosocketControlCode,
 };
 use tokio::net::TcpStream;
-use tokio::sync::Semaphore;
 
 mod messages;
 
@@ -78,16 +76,12 @@ impl SocketService for DemoRpcSocketService {
         log::info!("new connection server {}", stream.address());
         DemoRpcConnectionServer {
             address: stream.address(),
-            // How many spawned unary rpcs may be in flight for this connection. Small
-            // enough that the example client can outrun it and show shedding.
-            spawn_limit: Arc::new(Semaphore::new(16)),
         }
     }
 }
 
 struct DemoRpcConnectionServer {
     address: std::net::SocketAddr,
-    spawn_limit: Arc<Semaphore>,
 }
 impl ConnectionService for DemoRpcConnectionServer {
     type Request = Request;
@@ -103,30 +97,22 @@ impl ConnectionService for DemoRpcConnectionServer {
         let request_id = initiating_message.request_id;
         match initiating_message.body {
             Some(echo) => {
-                // Spawning opts this work out of connection backpressure, so bound it
-                // by shedding: no slot, no rpc. Slots are held until responses are
-                // handed off, so a peer that stops receiving sheds instead of
-                // accumulating spawned work. A real service might prefer an explicit
-                // "too busy" response over a cancellation.
-                match Arc::clone(&self.spawn_limit).try_acquire_owned() {
-                    Ok(slot) => {
-                        let work = tokio::spawn(echo_request(request_id, echo));
-                        RpcKind::Unary(
-                            async move {
-                                let _held_until_handoff = slot;
-                                match work.await {
-                                    Ok(response) => response,
-                                    Err(join_error) => {
-                                        log::error!("rpc task failed: {join_error}");
-                                        Response::cancelled(request_id)
-                                    }
-                                }
-                            }
-                            .boxed(),
-                        )
+                // Spawn the producer behind a bounded channel. send().await is the
+                // backpressure: the producer waits while the channel is full, and quits
+                // when the rpc is cancelled or the connection closes (the receiver
+                // drops).
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+                tokio::spawn(async move {
+                    let mut stream = pin!(echo_stream(request_id, echo));
+                    while let Some(response) = stream.next().await {
+                        if sender.send(response).await.is_err() {
+                            break;
+                        }
                     }
-                    Err(_no_slot) => RpcKind::Cancelled,
-                }
+                });
+                RpcKind::Streaming(
+                    futures::stream::poll_fn(move |context| receiver.poll_recv(context)).boxed(),
+                )
             }
             None => {
                 log::warn!("received empty echo request id {request_id}");
@@ -136,16 +122,17 @@ impl ConnectionService for DemoRpcConnectionServer {
     }
 }
 
-async fn echo_request(request_id: u64, echo: EchoRequest) -> Response {
-    // Pretend this is heavy work that deserves its own task. It is slow enough that
-    // the example client outruns the spawn slots, so you can watch shedding happen.
-    tokio::time::sleep(Duration::from_micros(500)).await;
-    Response {
-        request_id,
-        code: ProtosocketControlCode::Normal as u32,
-        body: Some(EchoResponse {
-            message: echo.message,
-            nanotime: echo.nanotime,
-        }),
-    }
+fn echo_stream(request_id: u64, echo: EchoRequest) -> impl Stream<Item = Response> {
+    let nanotime = echo.nanotime;
+    futures::stream::iter(echo.message.into_bytes().into_iter().enumerate().map(
+        move |(sequence, c)| Response {
+            request_id,
+            code: ProtosocketControlCode::Normal as u32,
+            body: Some(EchoStream {
+                message: (c as char).to_string(),
+                nanotime,
+                sequence: sequence as u64,
+            }),
+        },
+    ))
 }

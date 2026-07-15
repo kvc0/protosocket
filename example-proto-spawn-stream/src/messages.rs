@@ -29,15 +29,17 @@ pub struct Response {
     #[prost(uint32, tag = "2")]
     pub code: u32,
     #[prost(message, tag = "3")]
-    pub body: Option<EchoResponse>,
+    pub body: Option<EchoStream>,
 }
 
 #[derive(Clone, PartialEq, Eq, prost::Message)]
-pub struct EchoResponse {
+pub struct EchoStream {
     #[prost(string, tag = "1")]
     pub message: String,
     #[prost(uint64, tag = "2")]
     pub nanotime: u64,
+    #[prost(uint64, tag = "3")]
+    pub sequence: u64,
 }
 
 impl protosocket_rpc::Message for Request {

@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use futures::StreamExt;
 use messages::{EchoRequest, Request, Response};
 use protosocket::PooledEncoder;
 use protosocket_prost::{ProstDecoder, ProstSerializer};
@@ -37,7 +38,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let response_count = Arc::new(AtomicUsize::new(0));
-    let shed_count = Arc::new(AtomicUsize::new(0));
     let latency = Arc::new(histogram::AtomicHistogram::new(7, 52).expect("histogram works"));
 
     let concurrency = 256;
@@ -70,7 +70,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
                 request_ids.clone(),
                 client.clone(),
                 response_count.clone(),
-                shed_count.clone(),
                 latency.clone(),
             ));
         }
@@ -78,18 +77,11 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let metrics = tokio::spawn(print_periodic_metrics(
         response_count,
-        shed_count,
         latency,
         concurrent_count,
     ));
 
     tokio::select!(
-        // _ = connection_driver => {
-        //     log::warn!("connection driver quit");
-        // }
-        // _ = client_runtime => {
-        //     log::warn!("client runtime quit");
-        // }
         _ = metrics => {
             log::warn!("metrics runtime quit");
         }
@@ -100,7 +92,6 @@ async fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn print_periodic_metrics(
     response_count: Arc<AtomicUsize>,
-    shed_count: Arc<AtomicUsize>,
     latency: Arc<histogram::AtomicHistogram>,
     concurrent_count: Arc<AtomicUsize>,
 ) {
@@ -130,10 +121,9 @@ async fn print_periodic_metrics(
             .map(|b| *b.range().end())
             .unwrap_or_default() as f64
             / 1000.0;
-        let shed = shed_count.swap(0, std::sync::atomic::Ordering::Relaxed);
         let concurrent = concurrent_count.load(std::sync::atomic::Ordering::Relaxed);
         eprintln!(
-            "Messages: {total:10} rate: {hz:9.1}hz shed: {shed:6} p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}"
+            "Messages: {total:10} rate: {hz:9.1}hz p90: {p90:6.1}µs p999: {p999:6.1}µs p9999: {p9999:6.1}µs concurrency: {concurrent}"
         );
     }
 }
@@ -143,7 +133,6 @@ async fn generate_traffic(
     request_ids: Arc<AtomicU64>,
     client: RpcClient<Request, Response>,
     metrics_count: Arc<AtomicUsize>,
-    shed_count: Arc<AtomicUsize>,
     metrics_latency: Arc<histogram::AtomicHistogram>,
 ) {
     log::debug!("running traffic generator");
@@ -161,17 +150,12 @@ async fn generate_traffic(
             }),
         };
         concurrent_count.fetch_add(1, Ordering::Relaxed);
-        match client.send_unary(request) {
-            Ok(completion) => match completion.await {
-                Ok(response) => {
-                    handle_unary_response(response, &metrics_count, &metrics_latency);
+        match client.send_streaming(request) {
+            Ok(mut completion) => {
+                while let Some(Ok(response)) = completion.next().await {
+                    handle_stream_response(response, &metrics_count, &metrics_latency);
                 }
-                // The server sheds rpcs with a cancellation when its spawn slots are
-                // all in flight.
-                Err(_shed) => {
-                    shed_count.fetch_add(1, Ordering::Relaxed);
-                }
-            },
+            }
             Err(e) => {
                 log::error!("send should work: {e:?}");
                 return;
@@ -181,24 +165,21 @@ async fn generate_traffic(
     }
 }
 
-fn handle_unary_response(
+fn handle_stream_response(
     response: Response,
     metrics_count: &AtomicUsize,
     metrics_latency: &histogram::AtomicHistogram,
 ) {
     metrics_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let request_id = response.request_id;
     assert_ne!(response.request_id, 0, "received bad message");
     match response.body {
-        Some(echo) => {
-            assert_eq!(request_id, echo.message.parse().unwrap_or_default());
-
+        Some(char_response) => {
             let latency = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("time works")
                 .as_nanos() as u64
-                - echo.nanotime;
+                - char_response.nanotime;
             let _ = metrics_latency.increment(latency);
         }
         None => {
