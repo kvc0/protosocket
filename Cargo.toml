@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.0"
+version = "2.0.0"
 authors = ["kvc0"]
 repository = "https://github.com/kvc0/protosocket"
 edition = "2021"
@@ -34,7 +34,7 @@ categories = ["web-programming"]
 
 [workspace.dependencies]
 level-runtime           = { path = "level-runtime", version = "1.0.0" }
-protosocket             = { path = "protosocket-connection", version = "1.0.0" }
+protosocket             = { path = "protosocket-connection", version = "2.0.0" }
 protosocket-messagepack = { path = "protosocket-messagepack" }
 protosocket-rpc         = { path = "protosocket-rpc" }
 protosocket-server      = { path = "protosocket-server" }
