@@ -369,16 +369,10 @@ impl<
             }
             break if self.send_buffer.is_empty() {
                 log::debug!("send buffer is empty");
-                // TLS double-buffers: poll_write reports plaintext accepted into rustls,
-                // not bytes on the wire. Once the socket fills, rustls holds the remainder
-                // and still returns Ok(n) for the whole message, so we drain send_buffer
-                // and arrive here "done" -- parked with no writability interest, tail
-                // stranded, peer blocked on a message that never completes. poll_flush
-                // pushes the remainder, or returns Pending and registers the wake we would
-                // otherwise miss. No-op on an unbuffered stream.
+                // Ensure that any remaining data in the TLS buffer is flushed to the socket.
                 match pin!(&mut self.stream).poll_flush(context) {
                     Poll::Ready(Ok(())) | Poll::Pending => Ok(false),
-                    Poll::Ready(Err(ref e)) if would_block(e) || interrupted(e) => Ok(false),
+                    Poll::Ready(Err(ref e)) if would_block(e) || interrupted(e) => continue,
                     Poll::Ready(Err(e)) => Err(e),
                 }
             } else {
