@@ -369,7 +369,18 @@ impl<
             }
             break if self.send_buffer.is_empty() {
                 log::debug!("send buffer is empty");
-                Ok(false)
+                // TLS double-buffers: poll_write reports plaintext accepted into rustls,
+                // not bytes on the wire. Once the socket fills, rustls holds the remainder
+                // and still returns Ok(n) for the whole message, so we drain send_buffer
+                // and arrive here "done" -- parked with no writability interest, tail
+                // stranded, peer blocked on a message that never completes. poll_flush
+                // pushes the remainder, or returns Pending and registers the wake we would
+                // otherwise miss. No-op on an unbuffered stream.
+                match pin!(&mut self.stream).poll_flush(context) {
+                    Poll::Ready(Ok(())) | Poll::Pending => Ok(false),
+                    Poll::Ready(Err(ref e)) if would_block(e) || interrupted(e) => Ok(false),
+                    Poll::Ready(Err(e)) => Err(e),
+                }
             } else {
                 // I need to figure out how to get this from the os rather than hardcoding.
                 // 16 is the lowest I've seen mention of, and I've seen 1024 more commonly.
