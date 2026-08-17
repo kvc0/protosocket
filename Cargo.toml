@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 authors = ["kvc0"]
 repository = "https://github.com/kvc0/protosocket"
 edition = "2021"
