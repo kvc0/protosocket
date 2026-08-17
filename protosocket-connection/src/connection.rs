@@ -369,7 +369,12 @@ impl<
             }
             break if self.send_buffer.is_empty() {
                 log::debug!("send buffer is empty");
-                Ok(false)
+                // Ensure that any remaining data in the TLS buffer is flushed to the socket.
+                match pin!(&mut self.stream).poll_flush(context) {
+                    Poll::Ready(Ok(())) | Poll::Pending => Ok(false),
+                    Poll::Ready(Err(ref e)) if would_block(e) || interrupted(e) => continue,
+                    Poll::Ready(Err(e)) => Err(e),
+                }
             } else {
                 // I need to figure out how to get this from the os rather than hardcoding.
                 // 16 is the lowest I've seen mention of, and I've seen 1024 more commonly.
