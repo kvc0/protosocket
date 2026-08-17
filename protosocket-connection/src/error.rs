@@ -4,9 +4,12 @@ pub enum DeserializeError {
     /// Buffer will be retained and you will be called again later with more bytes
     #[error("Need more bytes to decode the next message")]
     IncompleteBuffer {
-        /// This is a hint to the connection for how many more bytes should be read.
+        /// Total bytes the next message occupies on the wire, inclusive of framing.
         /// You may be called again before you get another buffer with at least this
         /// many bytes.
+        ///
+        /// The connection disconnects when this exceeds its max buffer length.
+        /// Undercounting wedges a connection on a message it can never buffer.
         next_message_size: usize,
     },
     /// Buffer will be discarded
