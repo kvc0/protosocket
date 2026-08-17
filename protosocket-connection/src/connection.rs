@@ -215,7 +215,7 @@ impl<
                 Err(e) => match e {
                     DeserializeError::IncompleteBuffer { next_message_size } => {
                         if self.max_buffer_length < next_message_size {
-                            log::error!(
+                            log::info!(
                                 "tried to receive message that is too long. Resetting connection - max: {}, requested: {}",
                                 self.max_buffer_length,
                                 next_message_size
@@ -474,25 +474,230 @@ impl<
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn poll_receive(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
         loop {
-            match self.poll_read_inbound(context) {
+            break match self.poll_read_inbound(context) {
                 ReadBufferState::Pending => {
                     log::debug!("consumed all that I can from the read stream for now {self}");
-                    return Poll::Pending;
+                    Poll::Pending
                 }
                 ReadBufferState::MoreToRead => {
                     log::debug!("more to read");
-                    self.read_inbound_messages_and_react();
-                    continue;
+                    match self.read_inbound_messages_and_react() {
+                        ReadBufferState::Pending => {
+                            // we want to park on inbound pending
+                            continue;
+                        }
+                        ReadBufferState::MoreToRead => {
+                            // partial message, still want to park on inbound pending
+                            continue;
+                        }
+                        ReadBufferState::Error(e) => {
+                            log::warn!("error while reading inbound message from stream: {e:?}");
+                            Poll::Ready(())
+                        }
+                        ReadBufferState::Disconnected => {
+                            log::info!("read connection closed while reading inbound message");
+                            Poll::Ready(())
+                        }
+                    }
                 }
                 ReadBufferState::Disconnected => {
                     log::info!("read connection closed");
-                    return Poll::Ready(());
+                    Poll::Ready(())
                 }
                 ReadBufferState::Error(e) => {
                     log::warn!("error while reading from tcp stream: {e:?}");
-                    return Poll::Ready(());
+                    Poll::Ready(())
                 }
+            };
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{
+        collections::VecDeque,
+        future::Future,
+        io::Cursor,
+        pin::Pin,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll, Waker},
+    };
+
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    use crate::{
+        Codec, Connection, Decoder, DeserializeError, Encoder, MessageReactor, ReactorStatus,
+    };
+
+    const BUFFER_ALLOCATION_INCREMENT: usize = 8;
+
+    /// Yields the scripted chunks, then parks forever.
+    #[derive(Debug)]
+    struct ScriptedStream {
+        inbound: VecDeque<Vec<u8>>,
+    }
+
+    impl AsyncRead for ScriptedStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            match self.inbound.pop_front() {
+                Some(chunk) => {
+                    assert!(
+                        chunk.len() <= buffer.remaining(),
+                        "scripted chunk must fit in the receive buffer"
+                    );
+                    buffer.put_slice(&chunk);
+                    Poll::Ready(Ok(()))
+                }
+                None => Poll::Pending,
             }
         }
+    }
+
+    impl AsyncWrite for ScriptedStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Never produces a message: it always announces that it needs `next_message_size` bytes.
+    #[derive(Debug)]
+    struct IncompleteCodec {
+        next_message_size: usize,
+        decode_calls: Arc<AtomicUsize>,
+    }
+
+    impl Encoder for IncompleteCodec {
+        type Message = ();
+        type Serialized = Cursor<Vec<u8>>;
+
+        fn encode(&mut self, _message: Self::Message) -> Self::Serialized {
+            Cursor::new(Vec::new())
+        }
+    }
+
+    impl Decoder for IncompleteCodec {
+        type Message = ();
+
+        fn decode(
+            &mut self,
+            _buffer: impl bytes::Buf,
+        ) -> std::result::Result<(usize, Self::Message), DeserializeError> {
+            let calls = 1 + self.decode_calls.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                calls < 1000,
+                "connection spun on the receive buffer: {calls} decode attempts in one poll"
+            );
+            Err(DeserializeError::IncompleteBuffer {
+                next_message_size: self.next_message_size,
+            })
+        }
+    }
+
+    impl Codec for IncompleteCodec {}
+
+    #[derive(Debug)]
+    struct NoopReactor;
+
+    impl MessageReactor for NoopReactor {
+        type Codec = IncompleteCodec;
+        type Inbound = ();
+        type Outbound = ();
+        type LogicalOutbound = ();
+
+        fn on_inbound_message(&mut self, _message: Self::Inbound) -> ReactorStatus {
+            ReactorStatus::Continue
+        }
+
+        fn on_outbound_message(&mut self, message: Self::LogicalOutbound) -> Self::Outbound {
+            message
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn connection(
+        inbound: Vec<u8>,
+        max_buffer_length: usize,
+        next_message_size: usize,
+        decode_calls: Arc<AtomicUsize>,
+    ) -> (
+        spillway::Sender<()>,
+        Connection<ScriptedStream, NoopReactor>,
+    ) {
+        let (sender, receiver) = spillway::channel();
+        let connection = Connection::new(
+            ScriptedStream {
+                inbound: VecDeque::from([inbound]),
+            },
+            IncompleteCodec {
+                next_message_size,
+                decode_calls,
+            },
+            max_buffer_length,
+            BUFFER_ALLOCATION_INCREMENT,
+            1,
+            receiver,
+            NoopReactor,
+        );
+        (sender, connection)
+    }
+
+    /// A peer announcing a message larger than max_buffer_length used to wedge the poll loop:
+    /// the decode pass's Disconnected state was dropped, and the now-full receive buffer
+    /// returned MoreToRead forever.
+    #[test]
+    fn oversized_next_message_disconnects() {
+        let decode_calls = Arc::new(AtomicUsize::new(0));
+        // fills the receive buffer exactly, so no further read can make room
+        let (_sender, mut connection) = connection(
+            vec![0; BUFFER_ALLOCATION_INCREMENT],
+            BUFFER_ALLOCATION_INCREMENT,
+            BUFFER_ALLOCATION_INCREMENT + 1,
+            decode_calls.clone(),
+        );
+
+        assert_eq!(
+            Poll::Ready(()),
+            Pin::new(&mut connection).poll(&mut Context::from_waker(Waker::noop()))
+        );
+        assert_eq!(1, decode_calls.load(Ordering::Relaxed));
+    }
+
+    /// A message that has not arrived in full parks the connection rather than closing it.
+    #[test]
+    fn incomplete_next_message_parks() {
+        let decode_calls = Arc::new(AtomicUsize::new(0));
+        let (_sender, mut connection) = connection(vec![0; 2], 64, 4, decode_calls.clone());
+
+        assert_eq!(
+            Poll::Pending,
+            Pin::new(&mut connection).poll(&mut Context::from_waker(Waker::noop()))
+        );
+        assert_eq!(1, decode_calls.load(Ordering::Relaxed));
     }
 }

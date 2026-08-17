@@ -19,10 +19,10 @@ where
     ) -> std::result::Result<(usize, Self::Message), DeserializeError> {
         match prost::decode_length_delimiter(buffer.chunk()) {
             Ok(message_length) => {
-                if buffer.remaining() < message_length + prost::length_delimiter_len(message_length)
-                {
+                let framed_length = message_length + prost::length_delimiter_len(message_length);
+                if buffer.remaining() < framed_length {
                     return Err(DeserializeError::IncompleteBuffer {
-                        next_message_size: message_length,
+                        next_message_size: framed_length,
                     });
                 }
             }
